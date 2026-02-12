@@ -63,7 +63,6 @@ Convergence plots are saved as PDF files.
 ## Paper
 
 The full preprint is available on [arXiv](https://arxiv.org/abs/2602.10541)
-and as a [local PDF](misc/preprint.pdf).
 
 ## Citing this work
 
