@@ -8,29 +8,6 @@ Linear PDEs are solved in a single least-squares step; nonlinear PDEs are
 solved via Newton-Raphson iteration with Tikhonov regularisation,
 1/sqrt(N) feature normalisation, and continuation/homotopy.
 
-## Repository structure
-
-```
-FastLSQ/
-  fastlsq/                  # Python package
-    __init__.py
-    solvers.py               # FastLSQSolver (sin), PIELMSolver (tanh)
-    linalg.py                # Tikhonov-regularised least squares
-    newton.py                # Newton-Raphson driver, continuation
-    utils.py                 # Device setup, evaluation helpers
-    problems/
-      __init__.py
-      linear.py              # Poisson 5D, Heat 5D, Wave 1D/2D, Helmholtz, Maxwell
-      nonlinear.py           # NL-Poisson, Bratu, Burgers, NL-Helmholtz, Allen-Cahn
-      regression.py          # Regression-mode benchmarks (data fitting)
-  examples/
-    run_linear.py            # Linear benchmark: Fast-LSQ vs PIELM
-    run_nonlinear.py         # Nonlinear benchmark: Newton-Fast-LSQ
-  README.md
-  LICENSE
-  requirements.txt
-```
-
 ## Installation
 
 ```bash
