@@ -60,6 +60,11 @@ Convergence plots are saved as PDF files.
    current iterate, solve `J delta_beta = -R` with backtracking line search,
    and repeat until convergence.
 
+## Paper
+
+The full preprint is available on [arXiv](https://arxiv.org/abs/2602.10541)
+and as a [local PDF](misc/preprint.pdf).
+
 ## Citing this work
 
 If you use FastLSQ in your research, please cite:
