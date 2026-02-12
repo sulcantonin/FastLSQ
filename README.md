@@ -1,5 +1,9 @@
 # FastLSQ
 
+<p align="center">
+  <img src="misc/fastlsq_teaser.png" alt="FastLSQ method overview" width="800"/>
+</p>
+
 **Solving PDEs in one shot via Fourier features with exact analytical derivatives.**
 
 FastLSQ is a lightweight PDE solver that uses Random Fourier Features with
