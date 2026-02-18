@@ -27,25 +27,72 @@ pip install torch numpy matplotlib
 
 ## Quick start
 
-### Linear PDE benchmark
+### Solve a linear PDE in one line
 
-```bash
-python examples/run_linear.py
+```python
+from fastlsq import solve_linear
+from fastlsq.problems.linear import PoissonND
+
+problem = PoissonND()
+result = solve_linear(problem, scale=5.0)  # Auto-selects scale if None
+
+u_fn = result["u_fn"]
+print(f"Value error: {result['metrics']['val_err']:.2e}")
 ```
 
-Runs a grid search over bandwidth scales for 15 PDE/regression problems,
-comparing Fast-LSQ (sin) against PIELM (tanh).  Sensitivity plots are
-saved as PDF files.
+### Solve a nonlinear PDE
 
-### Nonlinear PDE benchmark
+```python
+from fastlsq import solve_nonlinear
+from fastlsq.problems.nonlinear import NLPoisson2D
+
+problem = NLPoisson2D()
+result = solve_nonlinear(problem, max_iter=30)
+
+print(f"Converged in {result['n_iters']} iterations")
+print(f"Value error: {result['metrics']['val_err']:.2e}")
+```
+
+### Plot solutions
+
+```python
+from fastlsq.plotting import plot_solution_2d_contour, plot_convergence
+
+# Plot 2D solution
+plot_solution_2d_contour(result["solver"], problem, save_path="solution.png")
+
+# Plot Newton convergence
+plot_convergence(result["history"], problem_name=problem.name, save_path="convergence.png")
+```
+
+### Check your problem definition
+
+```python
+from fastlsq.diagnostics import check_problem
+
+check_problem(problem)  # Validates shapes, gradients, data consistency
+```
+
+### Benchmarks
 
 ```bash
+# Linear PDE benchmark (Fast-LSQ vs PIELM)
+python examples/run_linear.py
+
+# Nonlinear PDE benchmark (Newton-Raphson)
 python examples/run_nonlinear.py
 ```
 
-Runs Newton-Raphson Fast-LSQ on five nonlinear PDE problems (NL-Poisson,
-Bratu, steady Burgers with continuation, NL-Helmholtz, Allen-Cahn).
-Convergence plots are saved as PDF files.
+## Features
+
+- **High-level API**: Solve PDEs in one line with `solve_linear()` and `solve_nonlinear()`
+- **Auto-tuning**: Automatic scale selection via grid search
+- **Built-in plotting**: Solution visualization, convergence plots, spectral sensitivity
+- **Geometry samplers**: Box, ball, sphere, interval, custom samplers
+- **Diagnostics**: Problem validation, conditioning checks, error detection
+- **Export utilities**: NumPy conversion, checkpoint saving/loading
+- **PyTorch Lightning**: Integration for training loops
+- **20+ benchmark problems**: Linear, nonlinear, and regression-mode PDEs
 
 ## Method overview
 
@@ -59,6 +106,47 @@ Convergence plots are saved as PDF files.
 3. **Newton iteration (nonlinear).** Linearise the PDE residual around the
    current iterate, solve `J delta_beta = -R` with backtracking line search,
    and repeat until convergence.
+
+## Adding your own PDE
+
+Create a problem class with these methods:
+
+```python
+class MyProblem:
+    def __init__(self):
+        self.name = "My PDE"
+        self.dim = 2  # Spatial dimension
+
+    def exact(self, x):
+        """Analytical solution u(x)."""
+        return torch.sin(np.pi * x[:, 0:1]) * torch.sin(np.pi * x[:, 1:2])
+
+    def exact_grad(self, x):
+        """Gradient of exact solution."""
+        # ... compute gradient analytically
+        return grad_u
+
+    def get_train_data(self, n_pde=5000, n_bc=1000):
+        """Return (x_pde, bcs, f_pde) for training."""
+        # ... sample collocation and boundary points
+        return x_pde, bcs, f_pde
+
+    def build(self, solver, x_pde, bcs, f_pde):
+        """Assemble linear system A beta = b."""
+        # ... build system matrix
+        return A, b
+
+    def get_test_points(self, n=5000):
+        """Random test points for evaluation."""
+        return torch.rand(n, self.dim)
+```
+
+Then solve it:
+
+```python
+problem = MyProblem()
+result = solve_linear(problem)
+```
 
 ## Paper
 
