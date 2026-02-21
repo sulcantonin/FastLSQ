@@ -15,14 +15,15 @@ solved via Newton-Raphson iteration with Tikhonov regularisation,
 ## Installation
 
 ```bash
-pip install -r requirements.txt
-pip install -e .
+pip install fastlsq
 ```
 
-Or simply install the dependencies manually:
+For development (includes testing and build tools):
 
 ```bash
-pip install torch numpy matplotlib
+git clone https://github.com/asulc/FastLSQ.git
+cd FastLSQ
+pip install -e ".[dev]"
 ```
 
 ## Quick start

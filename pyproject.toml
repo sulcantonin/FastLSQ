@@ -3,22 +3,63 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fastlsq"
+name = "FastLSQ"
 version = "0.1.0"
 description = "Solving PDEs in one shot via Fourier features with exact analytical derivatives"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 authors = [{name = "Antonin Sulc"}]
 requires-python = ">=3.10"
+keywords = [
+    "pde",
+    "partial-differential-equations",
+    "fourier-features",
+    "least-squares",
+    "scientific-computing",
+    "neural-network",
+    "physics-informed",
+    "newton-raphson",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Physics",
+]
 dependencies = [
     "torch>=2.0",
     "numpy>=1.24",
     "matplotlib>=3.7",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pandas>=2.0",
+    "build",
+    "twine",
+]
+lightning = [
+    "pytorch-lightning>=2.0",
+]
+
 [project.urls]
-Paper = "https://arxiv.org/abs/2602.10541"
+Homepage = "https://github.com/asulc/FastLSQ"
 Repository = "https://github.com/asulc/FastLSQ"
+Paper = "https://arxiv.org/abs/2602.10541"
+"Bug Tracker" = "https://github.com/asulc/FastLSQ/issues"
+Changelog = "https://github.com/asulc/FastLSQ/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["fastlsq*"]
+
+[tool.setuptools.package-data]
+fastlsq = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
