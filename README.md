@@ -104,6 +104,18 @@ python examples/run_linear.py
 python examples/run_nonlinear.py
 ```
 
+### Inverse problems
+
+The analytical derivatives enable gradients through the pre-factored solve, making inverse problems tractable. Example: recovering 4 anisotropic Gaussian heat sources (24 parameters) from 4 sparse sensors:
+
+<p align="center">
+  <img src="https://github.com/sulcantonin/FastLSQ/raw/main/misc/inverse_heat_source.png" alt="Inverse heat source localisation" width="700"/>
+</p>
+
+```bash
+python examples/inverse_heat_source.py
+```
+
 ## Core architecture
 
 The framework is built around **`SinusoidalBasis`** -- the analytical
@@ -222,6 +234,23 @@ If you use FastLSQ in your research, please cite:
       url={https://arxiv.org/abs/2602.10541},
 }
 ```
+
+## Building for PyPI
+
+To build and upload a new release to PyPI:
+
+```bash
+# Install build tools
+pip install build twine
+
+# Bump version in pyproject.toml if needed, then build
+python -m build
+
+# Upload to PyPI (requires PyPI API token)
+twine upload dist/*
+```
+
+For Test PyPI first: `twine upload --repository testpypi dist/*`
 
 ## License
 
