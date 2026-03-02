@@ -10,10 +10,12 @@ Reference:
     Analytical Derivatives," arXiv:2602.10541, 2026.
 """
 
+from fastlsq.basis import SinusoidalBasis, BasisCache, DiffOperator, Op, FeatureBasis
 from fastlsq.solvers import FastLSQSolver, PIELMSolver
 from fastlsq.linalg import solve_lstsq
 from fastlsq.api import solve_linear, solve_nonlinear
 from fastlsq.tuning import auto_select_scale
+from fastlsq.learnable import LearnableFastLSQ, train_bandwidth
 from fastlsq.plotting import (
     plot_solution_1d,
     plot_solution_2d_slice,
@@ -40,10 +42,19 @@ from fastlsq.export import (
 
 __version__ = "0.1.0"
 __all__ = [
+    # Basis and operators (foundation)
+    "SinusoidalBasis",
+    "BasisCache",
+    "DiffOperator",
+    "Op",
+    "FeatureBasis",
     # Core solvers
     "FastLSQSolver",
     "PIELMSolver",
     "solve_lstsq",
+    # Learnable bandwidth
+    "LearnableFastLSQ",
+    "train_bandwidth",
     # High-level API
     "solve_linear",
     "solve_nonlinear",

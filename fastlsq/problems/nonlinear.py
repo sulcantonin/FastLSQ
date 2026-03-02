@@ -75,26 +75,28 @@ class NLPoisson2D:
         return x_pde, [(x_bc, u_bc)], f_pde
 
     def build_newton_step(self, solver, x_pde, bcs, f_pde):
-        H, dH, ddH = solver.get_features(x_pde)
-        beta = solver.beta
-        lap_feat = torch.sum(ddH, dim=1)
-        u_k = H @ beta
-        lap_uk = lap_feat @ beta
+        basis = solver.basis
+        cache = basis.cache(x_pde)
+        H = basis.evaluate(x_pde, cache=cache)
+        lap_feat = basis.laplacian(x_pde, cache=cache)
+        u_k = H @ solver.beta
+        lap_uk = lap_feat @ solver.beta
         R = -lap_uk + u_k ** 3 - f_pde
         J_pde = -lap_feat + 3 * (u_k ** 2) * H
         rows_J, rows_b = [J_pde], [-R]
         for (x_bc, u_bc) in bcs:
-            H_bc, _, _ = solver.get_features(x_bc)
+            H_bc = basis.evaluate(x_bc)
             rows_J.append(self.lam_bc * H_bc)
-            rows_b.append(self.lam_bc * (u_bc - H_bc @ beta))
+            rows_b.append(self.lam_bc * (u_bc - H_bc @ solver.beta))
         return torch.cat(rows_J, 0), torch.cat(rows_b, 0)
 
     def build_linear_init(self, solver, x_pde, bcs, f_pde):
-        H, dH, ddH = solver.get_features(x_pde)
-        lap = torch.sum(ddH, dim=1)
-        rows_A, rows_b = [-lap], [f_pde]
+        basis = solver.basis
+        cache = basis.cache(x_pde)
+        lap_feat = basis.laplacian(x_pde, cache=cache)
+        rows_A, rows_b = [-lap_feat], [f_pde]
         for (x_bc, u_bc) in bcs:
-            H_bc, _, _ = solver.get_features(x_bc)
+            H_bc = basis.evaluate(x_bc)
             rows_A.append(self.lam_bc * H_bc)
             rows_b.append(self.lam_bc * u_bc)
         return torch.cat(rows_A, 0), torch.cat(rows_b, 0)
@@ -141,27 +143,29 @@ class Bratu2D:
         return x_pde, [(x_bc, u_bc)], f_pde
 
     def build_newton_step(self, solver, x_pde, bcs, f_pde):
-        H, dH, ddH = solver.get_features(x_pde)
-        beta = solver.beta
-        lap_feat = torch.sum(ddH, dim=1)
-        u_k = H @ beta
-        lap_uk = lap_feat @ beta
+        basis = solver.basis
+        cache = basis.cache(x_pde)
+        H = basis.evaluate(x_pde, cache=cache)
+        lap_feat = basis.laplacian(x_pde, cache=cache)
+        u_k = H @ solver.beta
+        lap_uk = lap_feat @ solver.beta
         exp_uk = torch.exp(torch.clamp(u_k, max=20.0))
         R = -lap_uk - self.lam * exp_uk - f_pde
         J_pde = -lap_feat - self.lam * exp_uk * H
         rows_J, rows_b = [J_pde], [-R]
         for (x_bc, u_bc) in bcs:
-            H_bc, _, _ = solver.get_features(x_bc)
+            H_bc = basis.evaluate(x_bc)
             rows_J.append(self.lam_bc * H_bc)
-            rows_b.append(self.lam_bc * (u_bc - H_bc @ beta))
+            rows_b.append(self.lam_bc * (u_bc - H_bc @ solver.beta))
         return torch.cat(rows_J, 0), torch.cat(rows_b, 0)
 
     def build_linear_init(self, solver, x_pde, bcs, f_pde):
-        H, dH, ddH = solver.get_features(x_pde)
-        lap = torch.sum(ddH, dim=1)
-        rows_A, rows_b = [-lap], [f_pde]
+        basis = solver.basis
+        cache = basis.cache(x_pde)
+        lap_feat = basis.laplacian(x_pde, cache=cache)
+        rows_A, rows_b = [-lap_feat], [f_pde]
         for (x_bc, u_bc) in bcs:
-            H_bc, _, _ = solver.get_features(x_bc)
+            H_bc = basis.evaluate(x_bc)
             rows_A.append(self.lam_bc * H_bc)
             rows_b.append(self.lam_bc * u_bc)
         return torch.cat(rows_A, 0), torch.cat(rows_b, 0)
@@ -213,28 +217,33 @@ class SteadyBurgers1D:
         return x_pde, [(x_bc, u_bc)], f_pde
 
     def build_newton_step(self, solver, x_pde, bcs, f_pde):
-        H, dH, ddH = solver.get_features(x_pde)
-        beta = solver.beta
-        u_k = H @ beta
+        basis = solver.basis
+        cache = basis.cache(x_pde)
+        H = basis.evaluate(x_pde, cache=cache)
+        dH = basis.gradient(x_pde, cache=cache)
+        ddH = basis.hessian_diag(x_pde, cache=cache)
         ux_feat = dH[:, 0, :]
-        ux_k = ux_feat @ beta
         uxx_feat = ddH[:, 0, :]
-        uxx_k = uxx_feat @ beta
+        u_k = H @ solver.beta
+        ux_k = ux_feat @ solver.beta
+        uxx_k = uxx_feat @ solver.beta
         R = u_k * ux_k - self.nu * uxx_k - f_pde
         J_pde = u_k * ux_feat + ux_k * H - self.nu * uxx_feat
         rows_J, rows_b = [J_pde], [-R]
         for (x_bc, u_bc) in bcs:
-            H_bc, _, _ = solver.get_features(x_bc)
+            H_bc = basis.evaluate(x_bc)
             rows_J.append(self.lam_bc * H_bc)
-            rows_b.append(self.lam_bc * (u_bc - H_bc @ beta))
+            rows_b.append(self.lam_bc * (u_bc - H_bc @ solver.beta))
         return torch.cat(rows_J, 0), torch.cat(rows_b, 0)
 
     def build_linear_init(self, solver, x_pde, bcs, f_pde):
-        _, _, ddH = solver.get_features(x_pde)
+        basis = solver.basis
+        cache = basis.cache(x_pde)
+        ddH = basis.hessian_diag(x_pde, cache=cache)
         uxx_feat = ddH[:, 0, :]
         rows_A, rows_b = [-self.nu * uxx_feat], [f_pde]
         for (x_bc, u_bc) in bcs:
-            H_bc, _, _ = solver.get_features(x_bc)
+            H_bc = basis.evaluate(x_bc)
             rows_A.append(self.lam_bc * H_bc)
             rows_b.append(self.lam_bc * u_bc)
         return torch.cat(rows_A, 0), torch.cat(rows_b, 0)
@@ -283,27 +292,30 @@ class NLHelmholtz2D:
         return x_pde, [(x_bc, u_bc)], f_pde
 
     def build_newton_step(self, solver, x_pde, bcs, f_pde):
-        H, dH, ddH = solver.get_features(x_pde)
-        beta = solver.beta
-        lap_feat = torch.sum(ddH, dim=1)
-        u_k = H @ beta
-        lap_uk = lap_feat @ beta
+        basis = solver.basis
+        cache = basis.cache(x_pde)
+        H = basis.evaluate(x_pde, cache=cache)
+        lap_feat = basis.laplacian(x_pde, cache=cache)
+        u_k = H @ solver.beta
+        lap_uk = lap_feat @ solver.beta
         R = lap_uk + self.k ** 2 * u_k + self.alpha * u_k ** 3 - f_pde
         J_pde = lap_feat + self.k ** 2 * H + 3 * self.alpha * (u_k ** 2) * H
         rows_J, rows_b = [J_pde], [-R]
         for (x_bc, u_bc) in bcs:
-            H_bc, _, _ = solver.get_features(x_bc)
+            H_bc = basis.evaluate(x_bc)
             rows_J.append(self.lam_bc * H_bc)
-            rows_b.append(self.lam_bc * (u_bc - H_bc @ beta))
+            rows_b.append(self.lam_bc * (u_bc - H_bc @ solver.beta))
         return torch.cat(rows_J, 0), torch.cat(rows_b, 0)
 
     def build_linear_init(self, solver, x_pde, bcs, f_pde):
-        H, _, ddH = solver.get_features(x_pde)
-        lap = torch.sum(ddH, dim=1)
-        A_pde = lap + self.k ** 2 * H
+        basis = solver.basis
+        cache = basis.cache(x_pde)
+        H = basis.evaluate(x_pde, cache=cache)
+        lap_feat = basis.laplacian(x_pde, cache=cache)
+        A_pde = lap_feat + self.k ** 2 * H
         rows_A, rows_b = [A_pde], [f_pde]
         for (x_bc, u_bc) in bcs:
-            H_bc, _, _ = solver.get_features(x_bc)
+            H_bc = basis.evaluate(x_bc)
             rows_A.append(self.lam_bc * H_bc)
             rows_b.append(self.lam_bc * u_bc)
         return torch.cat(rows_A, 0), torch.cat(rows_b, 0)
@@ -350,27 +362,32 @@ class AllenCahn1D:
         return x_pde, [(x_bc, u_bc)], f_pde
 
     def build_newton_step(self, solver, x_pde, bcs, f_pde):
-        H, dH, ddH = solver.get_features(x_pde)
-        beta = solver.beta
+        basis = solver.basis
+        cache = basis.cache(x_pde)
+        H = basis.evaluate(x_pde, cache=cache)
+        ddH = basis.hessian_diag(x_pde, cache=cache)
         uxx_feat = ddH[:, 0, :]
-        u_k = H @ beta
-        uxx_k = uxx_feat @ beta
+        u_k = H @ solver.beta
+        uxx_k = uxx_feat @ solver.beta
         R = self.eps * uxx_k + u_k - u_k ** 3 - f_pde
         J_pde = self.eps * uxx_feat + (1 - 3 * u_k ** 2) * H
         rows_J, rows_b = [J_pde], [-R]
         for (x_bc, u_bc) in bcs:
-            H_bc, _, _ = solver.get_features(x_bc)
+            H_bc = basis.evaluate(x_bc)
             rows_J.append(self.lam_bc * H_bc)
-            rows_b.append(self.lam_bc * (u_bc - H_bc @ beta))
+            rows_b.append(self.lam_bc * (u_bc - H_bc @ solver.beta))
         return torch.cat(rows_J, 0), torch.cat(rows_b, 0)
 
     def build_linear_init(self, solver, x_pde, bcs, f_pde):
-        H, _, ddH = solver.get_features(x_pde)
-        uxx = ddH[:, 0, :]
-        rows_A = [self.eps * uxx + H]
+        basis = solver.basis
+        cache = basis.cache(x_pde)
+        H = basis.evaluate(x_pde, cache=cache)
+        ddH = basis.hessian_diag(x_pde, cache=cache)
+        uxx_feat = ddH[:, 0, :]
+        rows_A = [self.eps * uxx_feat + H]
         rows_b = [f_pde]
         for (x_bc, u_bc) in bcs:
-            H_bc, _, _ = solver.get_features(x_bc)
+            H_bc = basis.evaluate(x_bc)
             rows_A.append(self.lam_bc * H_bc)
             rows_b.append(self.lam_bc * u_bc)
         return torch.cat(rows_A, 0), torch.cat(rows_b, 0)

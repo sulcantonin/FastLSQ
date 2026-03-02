@@ -5,61 +5,50 @@
 """
 Example: Extending FastLSQ with custom feature maps.
 
-This shows how to create a solver with custom activation functions
-(e.g., cosine instead of sine, or learned features).
+Demonstrates how to create cosine features using the quarter-wave identity
+cos(z) = sin(z + pi/2).  Since `SinusoidalBasis` handles arbitrary
+biases, cosine features are just sine features with a bias shift -- no
+subclassing needed.  All derivative machinery (gradient, Hessian, Laplacian)
+works automatically.
 """
 
 import torch
 import numpy as np
-from fastlsq.solvers import FastLSQSolver
+from fastlsq.basis import SinusoidalBasis
 from fastlsq.linalg import solve_lstsq
 from fastlsq.utils import device
 
 
-class CustomFeatureSolver(FastLSQSolver):
-    """FastLSQ solver with cosine activation instead of sine."""
+# ======================================================================
+# Create cosine features via phase shift
+# ======================================================================
 
-    def get_features(self, x):
-        """Override to use cosine activation."""
-        Hs, dHs, ddHs = [], [], []
-        for W, b in zip(self.W_list, self.b_list):
-            Z = x @ W + b
-            cos_Z = torch.cos(Z)
-            sin_Z = torch.sin(Z)
-            Hs.append(cos_Z)
-            dHs.append(-sin_Z.unsqueeze(1) * W.unsqueeze(0))
-            ddHs.append(-cos_Z.unsqueeze(1) * (W ** 2).unsqueeze(0))
-
-        H = torch.cat(Hs, -1)
-        dH = torch.cat(dHs, -1)
-        ddH = torch.cat(ddHs, -1)
-
-        if self.normalize:
-            norm = np.sqrt(self._n_features)
-            H = H / norm
-            dH = dH / norm
-            ddH = ddH / norm
-
-        return H, dH, ddH
+def cosine_basis(input_dim, n_features, sigma=5.0):
+    """Create cosine features: cos(z) = sin(z + pi/2)."""
+    W = torch.randn(input_dim, n_features, device=device) * sigma
+    b = torch.rand(1, n_features, device=device) * 2 * np.pi + (np.pi / 2)
+    return SinusoidalBasis(W, b, normalize=False)
 
 
-# Example usage
 if __name__ == "__main__":
     from fastlsq.problems.linear import PoissonND
 
     torch.set_default_dtype(torch.float32)
     problem = PoissonND()
 
-    # Use custom solver
-    solver = CustomFeatureSolver(problem.dim, normalize=False)
-    for _ in range(3):
-        solver.add_block(hidden_size=500, scale=5.0)
-
+    print("Cosine features via SinusoidalBasis with cos(z) = sin(z + pi/2)")
+    basis = cosine_basis(problem.dim, n_features=1500, sigma=5.0)
     x_pde, bcs, f_pde = problem.get_train_data(n_pde=5000, n_bc=1000)
-    A, b = problem.build(solver, x_pde, bcs, f_pde)
-    solver.beta = solve_lstsq(A, b)
 
-    # Evaluate
-    from fastlsq.utils import evaluate_error
-    val_err, grad_err = evaluate_error(solver, problem)
-    print(f"Custom cosine solver: val_err={val_err:.2e}, grad_err={grad_err:.2e}")
+    cache = basis.cache(x_pde)
+    A_pde = -basis.laplacian(x_pde, cache=cache)
+    H_bc = basis.evaluate(bcs[0][0])
+    A = torch.cat([A_pde, 100.0 * H_bc])
+    b = torch.cat([f_pde, 100.0 * bcs[0][1]])
+    beta = solve_lstsq(A, b)
+
+    x_test = problem.get_test_points(2000)
+    u_pred = basis.evaluate(x_test) @ beta
+    u_true = problem.exact(x_test)
+    err = (torch.norm(u_pred - u_true) / (torch.norm(u_true) + 1e-15)).item()
+    print(f"  Value error: {err:.2e}")

@@ -26,6 +26,7 @@ result = solve_nonlinear(
     n_blocks=3,
     hidden_size=500,
     max_iter=30,
+    return_solver=True,
     verbose=True,
 )
 

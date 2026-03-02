@@ -2,6 +2,60 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [0.2.0] - 2026-03-01
+
+### Added
+
+#### SinusoidalBasis -- analytical derivative engine (new foundation)
+- `SinusoidalBasis` class: evaluates arbitrary-order mixed partial derivatives
+  of sinusoidal features in O(1) via the cyclic derivative identity
+- `BasisCache`: pre-computes sin(Z)/cos(Z) once, reuses across all derivative
+  evaluations at the same points
+- `DiffOperator` / `Op`: symbolic linear differential operators that compose
+  via `+`, `-`, scalar `*`.  Factory methods: `Op.laplacian()`,
+  `Op.partial()`, `Op.identity()`, `Op.biharmonic()`, `Op.gradient_component()`
+- `FeatureBasis`: adapter wrapping non-sinusoidal solvers (e.g. PIELMSolver
+  with tanh) into the same basis interface
+
+#### Learnable bandwidth
+- `LearnableFastLSQ`: PyTorch `nn.Module` with learnable bandwidth via
+  reparameterisation trick (scalar, diagonal, or full Cholesky modes)
+- `train_bandwidth()`: hybrid training loop (inner exact solve + outer AdamW
+  on bandwidth parameters)
+
+#### PDE discovery example
+- `examples/pde_discovery.py`: sparse regression (SINDy-style) using
+  analytical derivatives from `SinusoidalBasis` as the dictionary
+
+### Changed
+
+#### Architecture: basis-centric API (breaking)
+- **`solver.basis`** is now the single entry point for all feature and
+  derivative computations.  Every solver exposes a `.basis` property
+  (`SinusoidalBasis` for FastLSQ, `FeatureBasis` for PIELM).
+- All problem classes (`linear.py`, `nonlinear.py`, `regression.py`) rewritten
+  to use `solver.basis.evaluate()`, `.gradient()`, `.hessian_diag()`,
+  `.laplacian()`, and `.cache()` instead of tuple unpacking.
+- `FastLSQSolver.predict()`, `.predict_with_grad()`, `.predict_with_laplacian()`
+  delegate directly to `self.basis`.
+- `PIELMSolver` now exposes `.basis` (via `FeatureBasis` adapter) so problem
+  classes work identically for both solver types.
+- `newton.py`: uses `solver.basis.evaluate()` for convergence metrics.
+
+#### Examples rewritten
+- `add_your_own_pde.py`: shows `Op`-based PDE definition only
+- `custom_features.py`: shows cosine features via phase shift only
+
+### Removed
+- `get_features()` method removed from public API (all solvers, all problems)
+- `SinusoidalBasis.get_features()` legacy tuple interface removed
+- `CustomFeatureSolver` subclass pattern removed
+- Legacy `build()` patterns using `(H, dH, ddH)` tuple unpacking
+
+### Fixed
+- Missing `sample_ball` import in `tests/test_basic.py`
+
+
 ## [0.1.0] - 2026-02-12
 
 ### Added

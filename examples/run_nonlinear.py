@@ -249,7 +249,7 @@ if __name__ == "__main__":
             solver = build_solver_with_scale(problem.dim, scale)
             x_train = torch.rand(5000, problem.dim, device=device)
             u_train = problem.exact(x_train)
-            H, _, _ = solver.get_features(x_train)
+            H = solver.basis.evaluate(x_train)
             solver.beta = solve_lstsq(H, u_train, mu=MU)
             ve, _ = evaluate_error(solver, problem)
             if ve < best_reg_val:

@@ -26,8 +26,7 @@ def _regression_build(slv, x_pde, bcs):
     """Standard regression build: A = H, b = u."""
     As, bs = [], []
     for (pts, vals, _) in bcs:
-        h, _, _ = slv.get_features(pts)
-        As.append(h)
+        As.append(slv.basis.evaluate(pts))
         bs.append(vals)
     return torch.cat(As), torch.cat(bs)
 

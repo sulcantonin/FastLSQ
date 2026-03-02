@@ -53,12 +53,13 @@ class PoissonND:
         return x_pde, [(x_bc, u_bc)], f_pde
 
     def build(self, slv, x_pde, bcs, f_pde):
-        _, _, ddH = slv.get_features(x_pde)
-        A = -torch.sum(ddH, dim=1)
+        basis = slv.basis
+        cache = basis.cache(x_pde)
+        A = -basis.laplacian(x_pde, cache=cache)
         b = f_pde
         As, bs = [A], [b]
         for (pts, vals) in bcs:
-            h, _, _ = slv.get_features(pts)
+            h = basis.evaluate(pts)
             As.append(h * 100.0)
             bs.append(vals * 100.0)
         return torch.cat(As), torch.cat(bs)
@@ -120,14 +121,16 @@ class HeatND:
         ], f_pde
 
     def build(self, slv, x_pde, bcs, f_pde):
-        _, dH, ddH = slv.get_features(x_pde)
-        lap = torch.sum(ddH[:, 0:5, :], dim=1)
-        u_t = dH[:, 5, :]
+        basis = slv.basis
+        cache = basis.cache(x_pde)
+        lap = basis.laplacian(x_pde, dims=range(5), cache=cache)
+        u_t = basis.gradient(x_pde, cache=cache)[:, 5, :]
         A = u_t - self.k * lap
         b = f_pde
         As, bs = [A], [b]
         for (pts, vals, type_) in bcs:
-            h, dh, _ = slv.get_features(pts)
+            h = basis.evaluate(pts)
+            dh = basis.gradient(pts)
             w = 100.0
             if type_ == "dirichlet":
                 As.append(h * w)
@@ -189,12 +192,15 @@ class Wave1D:
         ]
 
     def build(self, slv, x_pde, bcs):
-        _, _, ddH = slv.get_features(x_pde)
-        A = ddH[:, 1, :] - self.c2 * ddH[:, 0, :]
+        basis = slv.basis
+        cache = basis.cache(x_pde)
+        hess_diag = basis.hessian_diag(x_pde, cache=cache)
+        A = hess_diag[:, 1, :] - self.c2 * hess_diag[:, 0, :]
         b = torch.zeros(len(x_pde), 1, device=device)
         As, bs = [A], [b]
         for (pts, vals, type_) in bcs:
-            h, dh, _ = slv.get_features(pts)
+            h = basis.evaluate(pts)
+            dh = basis.gradient(pts)
             w = 100.0
             if type_ == "dirichlet":
                 As.append(h * w)
@@ -268,16 +274,19 @@ class Wave2D_MS:
         ], None
 
     def build(self, slv, x_pde, bcs, f_pde_ignored):
-        _, dH, ddH = slv.get_features(x_pde)
-        u_xx = ddH[:, 0, :]
-        u_yy = ddH[:, 1, :]
-        u_tt_norm = ddH[:, 2, :]
+        basis = slv.basis
+        cache = basis.cache(x_pde)
+        hess_diag = basis.hessian_diag(x_pde, cache=cache)
+        u_xx = hess_diag[:, 0, :]
+        u_yy = hess_diag[:, 1, :]
+        u_tt_norm = hess_diag[:, 2, :]
         A = u_tt_norm - (self.t_max ** 2) * (u_xx + self.a2 * u_yy)
         b = torch.zeros(len(x_pde), 1, device=device)
         As, bs = [A], [b]
         w_bc = 1000.0
         for (pts, vals, type_) in bcs:
-            h, dh, _ = slv.get_features(pts)
+            h = basis.evaluate(pts)
+            dh = basis.gradient(pts)
             if type_ == "dirichlet":
                 As.append(h * w_bc)
             elif type_ == "neumann_t":
@@ -336,14 +345,13 @@ class Helmholtz2D:
         return x_pde, [(x_bc, u_bc, "dirichlet")], f_pde
 
     def build(self, slv, x_pde, bcs, f_pde):
-        _, _, ddH = slv.get_features(x_pde)
-        lap = torch.sum(ddH, dim=1)
-        H, _, _ = slv.get_features(x_pde)
-        A = lap + (self.k ** 2) * H
+        basis = slv.basis
+        cache = basis.cache(x_pde)
+        A = basis.laplacian(x_pde, cache=cache) + (self.k ** 2) * basis.evaluate(x_pde, cache=cache)
         b = f_pde
         As, bs = [A], [b]
         for (pts, vals, _type) in bcs:
-            h, _, _ = slv.get_features(pts)
+            h = basis.evaluate(pts)
             w = 100.0
             As.append(h * w)
             bs.append(vals * w)
@@ -411,15 +419,18 @@ class Maxwell2D_TM:
         ], None
 
     def build(self, slv, x_pde, bcs, f_pde_ignored):
-        _, dH, ddH = slv.get_features(x_pde)
-        u_xx = ddH[:, 0, :]
-        u_yy = ddH[:, 1, :]
-        u_tt = ddH[:, 2, :]
+        basis = slv.basis
+        cache = basis.cache(x_pde)
+        hess_diag = basis.hessian_diag(x_pde, cache=cache)
+        u_xx = hess_diag[:, 0, :]
+        u_yy = hess_diag[:, 1, :]
+        u_tt = hess_diag[:, 2, :]
         A = u_tt - (self.c ** 2) * (u_xx + u_yy)
         b = torch.zeros(len(x_pde), 1, device=device)
         As, bs = [A], [b]
         for (pts, vals, type_) in bcs:
-            h, dh, _ = slv.get_features(pts)
+            h = basis.evaluate(pts)
+            dh = basis.gradient(pts)
             w = 100.0
             if type_ == "dirichlet":
                 As.append(h * w)

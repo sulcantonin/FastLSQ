@@ -81,7 +81,7 @@ def newton_solve(solver, problem, x_pde, bcs, f_pde,
         delta_beta = solve_lstsq(J, neg_R, mu=mu)
 
         # Solution-level change (meaningful convergence metric)
-        H_pde, _, _ = solver.get_features(x_pde)
+        H_pde = solver.basis.evaluate(x_pde)
         u_current = H_pde @ solver.beta
         du = H_pde @ delta_beta
         u_norm = torch.norm(u_current).item()

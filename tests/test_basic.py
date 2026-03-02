@@ -9,20 +9,24 @@ import pytest
 
 from fastlsq import (
     FastLSQSolver, solve_linear, solve_nonlinear,
-    check_problem, sample_box, to_numpy,
+    check_problem, sample_box, sample_ball, to_numpy,
 )
 from fastlsq.problems.linear import PoissonND
 from fastlsq.problems.nonlinear import NLPoisson2D
 
 
 def test_solver_creation():
-    """Test solver can be created and features computed."""
+    """Test solver can be created and basis used."""
     solver = FastLSQSolver(input_dim=2)
     solver.add_block(hidden_size=10, scale=1.0)
     assert solver.n_features == 10
 
     x = torch.rand(5, 2)
-    H, dH, ddH = solver.get_features(x)
+    basis = solver.basis
+    cache = basis.cache(x)
+    H = basis.evaluate(x, cache=cache)
+    dH = basis.gradient(x, cache=cache)
+    ddH = basis.hessian_diag(x, cache=cache)
     assert H.shape == (5, 10)
     assert dH.shape == (5, 2, 10)
     assert ddH.shape == (5, 2, 10)

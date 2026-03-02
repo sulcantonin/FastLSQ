@@ -4,16 +4,18 @@
 """
 Solver classes for FastLSQ.
 
-FastLSQSolver  -- Random Fourier Features with sin activation and exact
-                  analytical first- and second-order derivatives.
+FastLSQSolver  -- Random Fourier Features with sin activation.  Exposes
+                  a ``SinusoidalBasis`` via the ``.basis`` property.
 PIELMSolver    -- Physics-Informed Extreme Learning Machine with tanh
-                  activation (baseline comparison).
+                  activation (baseline).  Exposes a ``FeatureBasis``
+                  adapter via the same ``.basis`` property.
 """
 
 import torch
 import numpy as np
 
 from fastlsq.utils import device
+from fastlsq.basis import SinusoidalBasis, FeatureBasis
 
 
 # ======================================================================
@@ -28,9 +30,7 @@ class FastLSQSolver:
     input_dim : int
         Spatial / spatio-temporal dimensionality of the input.
     normalize : bool, optional
-        If True, all features are divided by sqrt(N) so that the empirical
-        kernel is properly scaled.  Recommended for Newton-based nonlinear
-        solves where beta must stay O(1).
+        If True, all features are divided by sqrt(N).
     """
 
     def __init__(self, input_dim, normalize=False):
@@ -40,22 +40,10 @@ class FastLSQSolver:
         self.b_list: list[torch.Tensor] = []
         self.beta: torch.Tensor | None = None
         self._n_features = 0
-
-    # ------------------------------------------------------------------
-    # Feature blocks
-    # ------------------------------------------------------------------
+        self._basis: SinusoidalBasis | None = None
 
     def add_block(self, hidden_size=500, scale=1.0):
-        """Append a block of random Fourier features.
-
-        Parameters
-        ----------
-        hidden_size : int
-            Number of features in this block.
-        scale : float or list[float]
-            Bandwidth parameter.  A list enables *anisotropic* scaling
-            (one value per input dimension).
-        """
+        """Append a block of random Fourier features."""
         W = torch.randn(self.input_dim, hidden_size, device=device)
 
         if isinstance(scale, (list, np.ndarray)):
@@ -68,88 +56,40 @@ class FastLSQSolver:
         self.W_list.append(W)
         self.b_list.append(b)
         self._n_features += hidden_size
+        self._basis = None
 
     @property
     def n_features(self):
-        """Total number of features across all blocks."""
         return self._n_features
 
-    # ------------------------------------------------------------------
-    # Feature evaluation
-    # ------------------------------------------------------------------
-
-    def get_features(self, x):
-        """Compute features, first derivatives, and diagonal Hessian.
-
-        Parameters
-        ----------
-        x : Tensor, shape (M, D)
-
-        Returns
-        -------
-        H   : Tensor, shape (M, N)      -- feature values
-        dH  : Tensor, shape (M, D, N)   -- d(feature)/dx_i
-        ddH : Tensor, shape (M, D, N)   -- d^2(feature)/dx_i^2
-        """
-        Hs, dHs, ddHs = [], [], []
-        for W, b in zip(self.W_list, self.b_list):
-            Z = x @ W + b
-            sin_Z = torch.sin(Z)
-            cos_Z = torch.cos(Z)
-            Hs.append(sin_Z)
-            dHs.append(cos_Z.unsqueeze(1) * W.unsqueeze(0))
-            ddHs.append(-sin_Z.unsqueeze(1) * (W ** 2).unsqueeze(0))
-
-        H = torch.cat(Hs, -1)
-        dH = torch.cat(dHs, -1)
-        ddH = torch.cat(ddHs, -1)
-
-        if self.normalize:
-            norm = np.sqrt(self._n_features)
-            H = H / norm
-            dH = dH / norm
-            ddH = ddH / norm
-
-        return H, dH, ddH
-
-    # ------------------------------------------------------------------
-    # Prediction
-    # ------------------------------------------------------------------
+    @property
+    def basis(self) -> SinusoidalBasis:
+        """The underlying analytical derivative engine."""
+        if self._basis is None:
+            W = torch.cat(self.W_list, dim=1)
+            b = torch.cat(self.b_list, dim=1)
+            self._basis = SinusoidalBasis(W, b, normalize=self.normalize)
+        return self._basis
 
     def predict(self, x):
         """Evaluate u_N(x)."""
-        H, _, _ = self.get_features(x)
-        return H @ self.beta
+        return self.basis.evaluate(x) @ self.beta
 
     def predict_with_grad(self, x):
-        """Evaluate u_N(x) and its gradient.
-
-        Returns
-        -------
-        u      : Tensor, shape (M, 1)
-        grad_u : Tensor, shape (M, D)
-        """
-        H, dH, _ = self.get_features(x)
-        u = H @ self.beta
-        grad_u = torch.einsum("idh,ho->id", dH, self.beta)
+        """Evaluate u_N(x) and its gradient."""
+        cache = self.basis.cache(x)
+        u = self.basis.evaluate(x, cache=cache) @ self.beta
+        grad_u = torch.einsum("idh,ho->id", self.basis.gradient(x, cache=cache), self.beta)
         return u, grad_u
 
     def predict_with_laplacian(self, x):
-        """Evaluate u_N(x), gradient, and Laplacian.
-
-        Returns
-        -------
-        u      : Tensor, shape (M, 1)
-        grad_u : Tensor, shape (M, D)
-        lap_u  : Tensor, shape (M, 1)
-        """
-        H, dH, ddH = self.get_features(x)
-        u = H @ self.beta
-        grad_u = torch.einsum("idh,ho->id", dH, self.beta)
-        lap_u = torch.sum(ddH, dim=1) @ self.beta
+        """Evaluate u_N(x), gradient, and Laplacian."""
+        cache = self.basis.cache(x)
+        u = self.basis.evaluate(x, cache=cache) @ self.beta
+        grad_u = torch.einsum("idh,ho->id", self.basis.gradient(x, cache=cache), self.beta)
+        lap_u = self.basis.laplacian(x, cache=cache) @ self.beta
         return u, grad_u, lap_u
 
-    # Aliases used by the nonlinear Newton driver
     evaluate = predict
     evaluate_with_grad = predict_with_grad
     evaluate_with_laplacian = predict_with_laplacian
@@ -160,10 +100,7 @@ class FastLSQSolver:
 # ======================================================================
 
 class PIELMSolver:
-    """Physics-Informed Extreme Learning Machine with tanh activation.
-
-    Used as a baseline comparison for the sin-based Fast-LSQ solver.
-    """
+    """Physics-Informed Extreme Learning Machine with tanh activation."""
 
     def __init__(self, input_dim):
         self.input_dim = input_dim
@@ -171,6 +108,7 @@ class PIELMSolver:
         self.b_list: list[torch.Tensor] = []
         self.beta: torch.Tensor | None = None
         self._n_features = 0
+        self._basis: FeatureBasis | None = None
 
     def add_block(self, hidden_size=500, scale=1.0):
         W_base = torch.rand(self.input_dim, hidden_size, device=device) * 2 - 1
@@ -187,12 +125,13 @@ class PIELMSolver:
         self.W_list.append(W)
         self.b_list.append(b)
         self._n_features += hidden_size
+        self._basis = None
 
     @property
     def n_features(self):
         return self._n_features
 
-    def get_features(self, x):
+    def _get_features(self, x):
         Hs, dHs, ddHs = [], [], []
         for W, b in zip(self.W_list, self.b_list):
             Z = x @ W + b
@@ -206,12 +145,20 @@ class PIELMSolver:
 
         return torch.cat(Hs, -1), torch.cat(dHs, -1), torch.cat(ddHs, -1)
 
+    @property
+    def basis(self) -> FeatureBasis:
+        """FeatureBasis adapter wrapping the tanh features."""
+        if self._basis is None:
+            self._basis = FeatureBasis(
+                self._get_features, self._n_features, self.input_dim
+            )
+        return self._basis
+
     def predict(self, x):
-        H, _, _ = self.get_features(x)
-        return H @ self.beta
+        return self.basis.evaluate(x) @ self.beta
 
     def predict_with_grad(self, x):
-        H, dH, _ = self.get_features(x)
-        u = H @ self.beta
-        grad_u = torch.einsum("idh,ho->id", dH, self.beta)
+        cache = self.basis.cache(x)
+        u = self.basis.evaluate(x, cache=cache) @ self.beta
+        grad_u = torch.einsum("idh,ho->id", self.basis.gradient(x, cache=cache), self.beta)
         return u, grad_u
