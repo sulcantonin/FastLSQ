@@ -235,23 +235,6 @@ If you use FastLSQ in your research, please cite:
 }
 ```
 
-## Building for PyPI
-
-To build and upload a new release to PyPI:
-
-```bash
-# Install build tools
-pip install build twine
-
-# Bump version in pyproject.toml if needed, then build
-python -m build
-
-# Upload to PyPI (requires PyPI API token)
-twine upload dist/*
-```
-
-For Test PyPI first: `twine upload --repository testpypi dist/*`
-
 ## License
 
 This project is licensed under the MIT License -- see [LICENSE](LICENSE) for details.
