@@ -224,33 +224,16 @@ The full preprint is available on [arXiv](https://arxiv.org/abs/2602.10541)
 If you use FastLSQ in your research, please cite:
 
 ```bibtex
-@misc{sulc2026solvingpdesshotfourier,
-      title={Solving PDEs in One Shot via Fourier Features with Exact Analytical Derivatives},
+@misc{sulc2026fastlsqframeworkoneshotpde,
+      title={FastLSQ: A Framework for One-Shot PDE Solving}, 
       author={Antonin Sulc},
       year={2026},
       eprint={2602.10541},
       archivePrefix={arXiv},
       primaryClass={math.NA},
-      url={https://arxiv.org/abs/2602.10541},
+      url={https://arxiv.org/abs/2602.10541}, 
 }
 ```
-
-## Building for PyPI
-
-To build and upload a new release to PyPI:
-
-```bash
-# Install build tools
-pip install build twine
-
-# Bump version in pyproject.toml if needed, then build
-python -m build
-
-# Upload to PyPI (requires PyPI API token)
-twine upload dist/*
-```
-
-For Test PyPI first: `twine upload --repository testpypi dist/*`
 
 ## License
 
