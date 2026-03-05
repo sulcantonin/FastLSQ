@@ -43,6 +43,22 @@ ALPHA    = 0.05
 T_FINAL  = 1.5
 N_SOURCES = 4
 
+# Accuracy / iterations (increase for higher fidelity, e.g. website video)
+LBFGS_MAXITER = 800       # was 300; more iterations → better convergence
+LBFGS_FTOL    = 1e-14     # function tolerance
+LBFGS_GTOL    = 1e-10     # gradient tolerance
+
+# Solver resolution (higher → more accurate forward model)
+N_FEAT   = 1800           # was 1200; more features for finer field
+M_INT    = 8000           # was 6000; more PDE collocation points
+M_BC     = 2500           # was 2000
+M_IC     = 1200           # was 1000
+
+# Animation output
+ANIM_FPS   = 12           # frames per second (smoother for video)
+ANIM_DPI   = 120          # resolution for GIF/video
+SAVE_MP4   = True         # save MP4 for website (requires ffmpeg); else GIF only
+
 # 4 sources at the four quadrants — each (xs, ys, I, a, b, c)
 # b=0: axis-aligned anisotropic Gaussians (more identifiable from sensors)
 TRUE_PARAMS = np.array([
@@ -96,8 +112,8 @@ class FastLSQHeatSolver:
     """
 
     def __init__(self, alpha=ALPHA, t_final=T_FINAL,
-                 n_feat=1200, n_blocks=3, sigmas=(2.0, 5.0, 9.0),
-                 m_int=6000, m_bc=2000, m_ic=1000,
+                 n_feat=N_FEAT, n_blocks=3, sigmas=(2.0, 5.0, 9.0),
+                 m_int=M_INT, m_bc=M_BC, m_ic=M_IC,
                  lam_bc=200.0, lam_ic=200.0, mu=1e-6):
         self.alpha   = alpha
         self.t_final = t_final
@@ -263,7 +279,7 @@ def run(noise_level=NOISE_LEVEL):
         lambda p: solver.loss_and_grad(p, SENSORS, SENSOR_TIMES, s_obs),
         INIT_PARAMS, method="L-BFGS-B", jac=True,
         bounds=BOUNDS, callback=callback,
-        options={"maxiter": 300, "ftol": 1e-13, "gtol": 1e-9},
+        options={"maxiter": LBFGS_MAXITER, "ftol": LBFGS_FTOL, "gtol": LBFGS_GTOL},
     )
     print(f"  Converged: {result.success}  iters={result.nit}  "
           f"loss={result.fun:.3e}")
@@ -377,9 +393,10 @@ def make_figures(solver, beta_true, beta_opt, opt_params, history, result):
     print(f"  Saved paper figure → {pdf_path}")
 
     # ----------------------------------------------------------------
-    # GIF animation
+    # GIF and/or MP4 animation (MP4 preferred for website)
     # ----------------------------------------------------------------
     gif_path = os.path.join(_here, "..", "inverse_heat_source.gif")
+    mp4_path = os.path.join(_here, "..", "inverse_heat_source.mp4")
     print(f"  Rendering animation ({len(history)} frames) …")
 
     fig2, (axL, axR) = plt.subplots(1, 2, figsize=(11, 5))
@@ -429,10 +446,22 @@ def make_figures(solver, beta_true, beta_opt, opt_params, history, result):
         return []
 
     ani = animation.FuncAnimation(fig2, update, frames=len(history),
-                                  blit=False, interval=80)
-    ani.save(gif_path, writer="pillow", fps=8)
-    plt.close(fig2)
+                                  blit=False, interval=1000 // ANIM_FPS)
+
+    # Save GIF (always, for compatibility)
+    ani.save(gif_path, writer="pillow", fps=ANIM_FPS, dpi=ANIM_DPI)
     print(f"  Saved GIF → {gif_path}")
+
+    # Save MP4 for website (smaller, smoother; requires ffmpeg)
+    if SAVE_MP4:
+        try:
+            ani.save(mp4_path, writer="ffmpeg", fps=ANIM_FPS, dpi=ANIM_DPI,
+                    extra_args=["-vcodec", "libx264", "-pix_fmt", "yuv420p"])
+            print(f"  Saved MP4 → {mp4_path}")
+        except Exception as e:
+            print(f"  MP4 save failed (install ffmpeg): {e}")
+
+    plt.close(fig2)
 
 
 def main():
