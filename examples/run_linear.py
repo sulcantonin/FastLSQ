@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE file for details.
 
 """
-Linear PDE benchmark: Fast-LSQ (sin) vs PIELM (tanh).
+Linear PDE benchmark: Fast-LSQ vs PIELM (tanh).
 
 For each problem the script performs a grid search over the bandwidth
 parameter sigma, compares both solvers in terms of value and gradient
@@ -133,7 +133,7 @@ def plot_and_save_sensitivity(problem_name, scales, results_rff, results_pielm):
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
-    ax1.plot(scales, val_rff, "b-o", label="Fast-LSQ (sin)", linewidth=2, markersize=6)
+    ax1.plot(scales, val_rff, "b-o", label="Fast-LSQ", linewidth=2, markersize=6)
     ax1.plot(scales, val_pielm, "r--s", label="PIELM (tanh)", linewidth=2, markersize=6)
     ax1.set_xscale("log"); ax1.set_yscale("log")
     ax1.set_xlabel(r"Scale (Frequency Bandwidth $\sigma$)")
@@ -141,7 +141,7 @@ def plot_and_save_sensitivity(problem_name, scales, results_rff, results_pielm):
     ax1.set_title(f"{problem_name}: Function Approx.")
     ax1.legend(); ax1.grid(True, which="both", ls="-", alpha=0.3)
 
-    ax2.plot(scales, grad_rff, "b-o", label="Fast-LSQ (sin)", linewidth=2, markersize=6)
+    ax2.plot(scales, grad_rff, "b-o", label="Fast-LSQ", linewidth=2, markersize=6)
     ax2.plot(scales, grad_pielm, "r--s", label="PIELM (tanh)", linewidth=2, markersize=6)
     ax2.set_xscale("log"); ax2.set_yscale("log")
     ax2.set_xlabel(r"Scale (Frequency Bandwidth $\sigma$)")
@@ -185,7 +185,7 @@ def run_fair_comparison():
         s_rff, v_rff, g_rff, t_rff, res_rff = grid_search_scale(
             FastLSQSolver, problem, scales
         )
-        print(f"{problem.name:<15} | {'Fast-LSQ (sin)':<15} | "
+        print(f"{problem.name:<15} | {'Fast-LSQ':<15} | "
               f"{s_rff:<10.1f} | {t_rff:<10.4f} | {v_rff:.2e}     | {g_rff:.2e}")
 
         s_pielm, v_pielm, g_pielm, t_pielm, res_pielm = grid_search_scale(

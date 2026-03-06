@@ -9,10 +9,72 @@ import pytest
 
 from fastlsq import (
     FastLSQSolver, solve_linear, solve_nonlinear,
-    check_problem, sample_box, sample_ball, to_numpy,
+    check_problem, sample_box, sample_ball, sample_boundary_box, to_numpy, Op,
 )
 from fastlsq.problems.linear import PoissonND
 from fastlsq.problems.nonlinear import NLPoisson2D
+
+
+def test_trivial_pde():
+    """Test a trivial 2D Poisson with known exact solution u = sin(pi*x)*sin(pi*y)."""
+    torch.set_default_dtype(torch.float64)
+
+    class TrivialPoisson2D:
+        """-Laplacian(u) = 2*pi^2 * sin(pi*x)*sin(pi*y) on [0,1]^2, u=0 on boundary."""
+        name = "Trivial Poisson 2D"
+        dim = 2
+        pde_op = -Op.laplacian(d=2)
+
+        def exact(self, x):
+            return torch.sin(np.pi * x[:, 0:1]) * torch.sin(np.pi * x[:, 1:2])
+
+        def exact_grad(self, x):
+            sx = torch.sin(np.pi * x[:, 0:1])
+            cx = torch.cos(np.pi * x[:, 0:1])
+            sy = torch.sin(np.pi * x[:, 1:2])
+            cy = torch.cos(np.pi * x[:, 1:2])
+            return torch.cat([np.pi * cx * sy, np.pi * sx * cy], dim=1)
+
+        def source(self, x):
+            return 2 * np.pi**2 * self.exact(x)
+
+        def get_train_data(self, n_pde=2000, n_bc=400):
+            x_pde = sample_box(n_pde, self.dim)
+            f_pde = self.source(x_pde)
+            x_bc = sample_boundary_box(n_bc, self.dim)
+            u_bc = self.exact(x_bc)
+            return x_pde, [(x_bc, u_bc)], f_pde
+
+        def build(self, solver, x_pde, bcs, f_pde):
+            basis = solver.basis
+            cache = basis.cache(x_pde)
+            A_pde = self.pde_op.apply(basis, x_pde, cache=cache)
+            As, bs = [A_pde], [f_pde]
+            for (x_bc, u_bc) in bcs:
+                As.append(100.0 * basis.evaluate(x_bc))
+                bs.append(100.0 * u_bc)
+            return torch.cat(As), torch.cat(bs)
+
+        def get_test_points(self, n=2000):
+            return sample_box(n, self.dim)
+
+    problem = TrivialPoisson2D()
+    result = solve_linear(
+        problem,
+        scale=5.0,
+        n_blocks=2,
+        hidden_size=300,
+        n_pde=2000,
+        n_bc=400,
+        n_test=2000,
+        verbose=False,
+    )
+    assert result["metrics"]["val_err"] < 1e-3, (
+        f"Trivial PDE value error {result['metrics']['val_err']:.2e} should be < 1e-3"
+    )
+    assert result["metrics"]["grad_err"] < 1e-2, (
+        f"Trivial PDE gradient error {result['metrics']['grad_err']:.2e} should be < 1e-2"
+    )
 
 
 def test_solver_creation():

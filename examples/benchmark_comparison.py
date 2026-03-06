@@ -256,7 +256,7 @@ def _fem_basis(refine: int = 4):
     return Basis(mesh, ElementTriP2())
 
 
-def fem_linear(f_fn, exact_fn, k2: float = 0.0, refine: int = 4):
+def fem_linear(f_fn, exact_fn, k2: float = 0.0, refine: int = 6):
     """FEM solve for  (Δ + k²)u = f  with Dirichlet BCs.
 
     For k2 = 0 this reduces to  Δu = f  (Poisson), using K·u = f_vec.
@@ -287,8 +287,8 @@ def fem_linear(f_fn, exact_fn, k2: float = 0.0, refine: int = 4):
 
 
 def fem_newton(f_fn, exact_fn, nl_r_fn, nl_j_fn,
-               k2: float = 0.0, refine: int = 4,
-               max_iter: int = 25, tol: float = 1e-12):
+               k2: float = 0.0, refine: int = 5,
+               max_iter: int = 50, tol: float = 1e-14):
     """Newton–FEM for  L·u + N(u) = f  where L = (Δ+k²) or −Δ.
 
     nl_r_fn(u_h, x, y) → N(u_h)           (nonlinear residual per point)
@@ -346,12 +346,12 @@ def fem_newton(f_fn, exact_fn, nl_r_fn, nl_j_fn,
 #  scipy.integrate.solve_bvp helper
 # ══════════════════════════════════════════════════════════════════
 
-def bvp_solve(ode_fn, bc_fn, exact_fn, tol: float = 1e-7):
+def bvp_solve(ode_fn, bc_fn, exact_fn, tol: float = 1e-10, max_nodes: int = 100000):
     """Wrap scipy.integrate.solve_bvp.  Returns (err, time_s, n_nodes)."""
     t0    = time.perf_counter()
-    x0    = np.linspace(0.0, 1.0, 30)
+    x0    = np.linspace(0.0, 1.0, 50)
     y0    = np.zeros((2, x0.size))
-    sol   = solve_bvp(ode_fn, bc_fn, x0, y0, tol=tol, max_nodes=20000)
+    sol   = solve_bvp(ode_fn, bc_fn, x0, y0, tol=tol, max_nodes=max_nodes)
     elapsed = time.perf_counter() - t0
     x_t   = np.linspace(0.0, 1.0, 5000)
     u_pred = sol.sol(x_t)[0]
@@ -521,12 +521,12 @@ def run_all():
         return rel_l2(rbf_helm.phi_test(x_t) @ alpha,
                       helm_exact(x_t[:, 0], x_t[:, 1])), elapsed
 
-    # P2 FEM needs refine=5 for 5 oscillations per unit length at k=10
+    # P2 FEM: refine=6 gives ~64 subdivisions for k=10 (high-frequency Helmholtz)
     _record("Helmholtz 2D", "flsq",
             lambda: fastlsq_linear(prob, SIGMA["Helmholtz 2D"]))
     _record("Helmholtz 2D", "rbf",  _rbf_helm)
     _record("Helmholtz 2D", "conv",
-            lambda: fem_linear(helm_src, helm_exact, k2=K_HELM ** 2, refine=5))
+            lambda: fem_linear(helm_src, helm_exact, k2=K_HELM ** 2, refine=6))
 
     # ── L5: Maxwell 2D TM ───────────────────────────────────────────
     print("\n  [Maxwell 2D TM]")
@@ -588,7 +588,8 @@ def run_all():
             lambda: fem_newton(
                 f_fn=nlp_src, exact_fn=nlp_exact,
                 nl_r_fn=lambda u, x, y: u ** 3,
-                nl_j_fn=lambda u, x, y: 3 * u ** 2))
+                nl_j_fn=lambda u, x, y: 3 * u ** 2,
+                refine=5))
 
     # ── N2: Bratu 2D ────────────────────────────────────────────────
     print("\n  [Bratu 2D]")
@@ -644,7 +645,8 @@ def run_all():
             lambda: fem_newton(
                 f_fn=bratu_src, exact_fn=bratu_exact,
                 nl_r_fn=_fem_bratu_nl_r,
-                nl_j_fn=_fem_bratu_nl_j))
+                nl_j_fn=_fem_bratu_nl_j,
+                refine=5))
 
     # ── N3: Steady Burgers 1D ───────────────────────────────────────
     print("\n  [Burgers 1D]")
@@ -737,7 +739,7 @@ def run_all():
                 f_fn=nlh_src, exact_fn=nlh_exact,
                 nl_r_fn=lambda u, x, y: A_NLH * u ** 3,
                 nl_j_fn=lambda u, x, y: 3 * A_NLH * u ** 2,
-                k2=K_NLH ** 2))
+                k2=K_NLH ** 2, refine=5))
 
     # ── N5: Allen-Cahn 1D ───────────────────────────────────────────
     print("\n  [Allen-Cahn 1D]")
