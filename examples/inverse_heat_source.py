@@ -13,8 +13,8 @@ The forward model solves the space-time heat equation
 for the full 3-D field u(x, y, t).  The sources are steady (time-independent)
 anisotropic Gaussians; the temperature field evolves from zero and grows as
 heat diffuses outward.  Each sensor is a fixed spatial point that records a
-temperature time-series: with 4 sensors × 40 snapshots the problem has
-160 observations to constrain 24 unknown source parameters.
+temperature time-series: with 4 sensors × 60 snapshots the problem has
+240 observations to constrain 24 unknown source parameters.
 
 Each source f_k is parameterised by θ_k = (x_s, y_s, I, a, b, c) where
 the precision matrix is P = [[a,0],[b,c]]^T [[a,0],[b,c]] (anisotropic
@@ -43,21 +43,21 @@ ALPHA    = 0.05
 T_FINAL  = 1.5
 N_SOURCES = 4
 
-# Accuracy / iterations (increase for higher fidelity, e.g. website video)
-LBFGS_MAXITER = 800       # was 300; more iterations → better convergence
-LBFGS_FTOL    = 1e-14     # function tolerance
-LBFGS_GTOL    = 1e-10     # gradient tolerance
+# Accuracy / iterations
+LBFGS_MAXITER = 3000      # more iterations for finer convergence
+LBFGS_FTOL    = 1e-16     # function tolerance
+LBFGS_GTOL    = 1e-12     # gradient tolerance
 
-# Solver resolution (higher → more accurate forward model)
-N_FEAT   = 1800           # was 1200; more features for finer field
-M_INT    = 8000           # was 6000; more PDE collocation points
-M_BC     = 2500           # was 2000
-M_IC     = 1200           # was 1000
+# Solver resolution (higher → more accurate forward model; N_FEAT divisible by 3)
+N_FEAT   = 2100           # more features for finer field
+M_INT    = 10000          # more PDE collocation points
+M_BC     = 3000           # boundary collocation
+M_IC     = 1500           # initial condition collocation
 
 # Animation output
-ANIM_FPS   = 12           # frames per second (smoother for video)
-ANIM_DPI   = 120          # resolution for GIF/video
-SAVE_MP4   = True         # save MP4 for website (requires ffmpeg); else GIF only
+ANIM_FPS        = 8       # frames per second
+ANIM_DPI        = 90      # resolution for GIF
+ANIM_FRAME_SKIP = 10      # show every Nth frame
 
 # 4 sources at the four quadrants — each (xs, ys, I, a, b, c)
 # b=0: axis-aligned anisotropic Gaussians (more identifiable from sensors)
@@ -393,75 +393,90 @@ def make_figures(solver, beta_true, beta_opt, opt_params, history, result):
     print(f"  Saved paper figure → {pdf_path}")
 
     # ----------------------------------------------------------------
-    # GIF and/or MP4 animation (MP4 preferred for website)
+    # GIF animation: recovered field, trajectories, distance to ground truth
     # ----------------------------------------------------------------
-    gif_path = os.path.join(_here, "..", "inverse_heat_source.gif")
-    mp4_path = os.path.join(_here, "..", "inverse_heat_source.mp4")
-    print(f"  Rendering animation ({len(history)} frames) …")
+    gif_path = os.path.join(_here, "..", "misc", "inverse_heat_source.gif")
+    frame_indices = np.unique(np.concatenate([
+        np.arange(0, len(history), ANIM_FRAME_SKIP),
+        [len(history) - 1],
+    ]))
+    print(f"  Rendering animation ({len(frame_indices)} frames, every {ANIM_FRAME_SKIP}th) …")
 
-    fig2, (axL, axR) = plt.subplots(1, 2, figsize=(11, 5))
-    fig2.subplots_adjust(wspace=0.12, top=0.88)
+    # Precompute distances from ground truth
+    dists = np.zeros((len(history), N_SOURCES))
+    for i, params in enumerate(history):
+        for k in range(N_SOURCES):
+            dx = params[k * 6] - TRUE_PARAMS[k * 6]
+            dy = params[k * 6 + 1] - TRUE_PARAMS[k * 6 + 1]
+            dists[i, k] = np.sqrt(dx**2 + dy**2)
+
+    fig2, (ax_field, ax_traj, ax_dist) = plt.subplots(1, 3, figsize=(14, 4.5))
+    fig2.subplots_adjust(wspace=0.22, top=0.88)
     fig2.suptitle("FastLSQ — Inverse Heat Source Localisation (4 sources)",
                   fontsize=12)
 
-    # Static left panel: true field
-    axL.pcolormesh(XX, YY, u_true, cmap="inferno", shading="gouraud",
-                   vmin=0, vmax=vmax)
-    axL.plot(SENSORS[:, 0], SENSORS[:, 1], "ws", markersize=5,
-             markeredgecolor="k")
-    for k in range(N_SOURCES):
-        axL.plot(TRUE_PARAMS[k * 6], TRUE_PARAMS[k * 6 + 1],
-                 "*", color=SOURCE_COLORS[k], markersize=13,
-                 markeredgecolor="k", label=SOURCE_LABELS[k])
-    axL.set_xlim(0, 1); axL.set_ylim(0, 1); axL.set_aspect("equal")
-    axL.set_title(f"True field  t={t_snap}", fontsize=10)
-    axL.legend(loc="upper right", fontsize=7)
-
-    # Dynamic right panel
-    im_r = axR.pcolormesh(XX, YY, np.zeros_like(u_true), cmap="inferno",
-                          shading="gouraud", vmin=0, vmax=vmax)
-
-    def update(frame):
-        axR.clear()
+    def update(idx):
+        ax_field.clear()
+        ax_traj.clear()
+        ax_dist.clear()
+        frame = frame_indices[idx]
         params = history[frame]
         beta_f = solver.forward_solve(params)
         u_f    = solver.predict(beta_f, pts_snap).reshape(nx, nx)
-        axR.pcolormesh(XX, YY, u_f, cmap="inferno", shading="gouraud",
-                       vmin=0, vmax=vmax)
-        axR.plot(SENSORS[:, 0], SENSORS[:, 1], "ws", markersize=5,
-                 markeredgecolor="k")
+
+        # Panel 1: Recovered temperature field
+        ax_field.pcolormesh(XX, YY, u_f, cmap="inferno", shading="gouraud",
+                            vmin=0, vmax=vmax)
+        ax_field.plot(SENSORS[:, 0], SENSORS[:, 1], "ws", markersize=5,
+                      markeredgecolor="k")
+        for k in range(N_SOURCES):
+            xs_t = TRUE_PARAMS[k * 6];  ys_t = TRUE_PARAMS[k * 6 + 1]
+            ax_field.plot(params[k * 6], params[k * 6 + 1], "o", color=SOURCE_COLORS[k],
+                          markersize=9, markeredgecolor="k")
+            ax_field.plot(xs_t, ys_t, "*", color=SOURCE_COLORS[k], markersize=12,
+                          markeredgecolor="k", alpha=0.35)
+        ax_field.set_xlim(0, 1); ax_field.set_ylim(0, 1); ax_field.set_aspect("equal")
+        ax_field.set_title(f"Recovered field  t={t_snap}", fontsize=10)
+        ax_field.grid(True, linestyle="--", alpha=0.35)
+
+        # Panel 2: L-BFGS-B source trajectories
         for k in range(N_SOURCES):
             xs_t = TRUE_PARAMS[k * 6];  ys_t = TRUE_PARAMS[k * 6 + 1]
             xs_c = history[:frame + 1, k * 6]
             ys_c = history[:frame + 1, k * 6 + 1]
             c    = SOURCE_COLORS[k]
-            axR.plot(xs_c, ys_c, "-", color=c, linewidth=1.5, alpha=0.7)
-            axR.plot(params[k * 6], params[k * 6 + 1], "o", color=c,
-                     markersize=9, markeredgecolor="k")
-            axR.plot(xs_t, ys_t, "*", color=c, markersize=12,
-                     markeredgecolor="k", alpha=0.35)
-        axR.set_xlim(0, 1); axR.set_ylim(0, 1); axR.set_aspect("equal")
-        axR.set_title(f"Recovered field — iteration {frame}", fontsize=10)
-        axR.grid(True, linestyle="--", alpha=0.35)
+            ax_traj.plot(xs_c, ys_c, "-", color=c, linewidth=1.5, alpha=0.7,
+                         label=SOURCE_LABELS[k])
+            ax_traj.plot(xs_c[0], ys_c[0], "^", color=c, markersize=9,
+                         markeredgecolor="k")
+            ax_traj.plot(params[k * 6], params[k * 6 + 1], "o", color=c,
+                         markersize=9, markeredgecolor="k")
+            ax_traj.plot(xs_t, ys_t, "*", color=c, markersize=12,
+                         markeredgecolor="k", alpha=0.4)
+        ax_traj.set_xlim(0, 1); ax_traj.set_ylim(0, 1); ax_traj.set_aspect("equal")
+        ax_traj.set_title("Source trajectories (▲ start, ● current, ★ true)", fontsize=10)
+        ax_traj.legend(loc="upper right", fontsize=7)
+        ax_traj.grid(True, linestyle="--", alpha=0.35)
+
+        # Panel 3: Distance from estimated to ground truth
+        iters = np.arange(frame + 1)
+        for k in range(N_SOURCES):
+            ax_dist.plot(iters, dists[:frame + 1, k], color=SOURCE_COLORS[k],
+                         linewidth=1.5, label=SOURCE_LABELS[k])
+        ax_dist.set_xlim(0, len(history) - 1)
+        ax_dist.set_ylim(0, dists.max() * 1.05)
+        ax_dist.set_xlabel("Iteration", fontsize=9)
+        ax_dist.set_ylabel("Distance to ground truth", fontsize=9)
+        ax_dist.set_title("Source position error", fontsize=10)
+        ax_dist.legend(loc="upper right", fontsize=7)
+        ax_dist.grid(True, linestyle="--", alpha=0.35)
         return []
 
-    ani = animation.FuncAnimation(fig2, update, frames=len(history),
+    ani = animation.FuncAnimation(fig2, update, frames=len(frame_indices),
                                   blit=False, interval=1000 // ANIM_FPS)
-
-    # Save GIF (always, for compatibility)
     ani.save(gif_path, writer="pillow", fps=ANIM_FPS, dpi=ANIM_DPI)
-    print(f"  Saved GIF → {gif_path}")
-
-    # Save MP4 for website (smaller, smoother; requires ffmpeg)
-    if SAVE_MP4:
-        try:
-            ani.save(mp4_path, writer="ffmpeg", fps=ANIM_FPS, dpi=ANIM_DPI,
-                    extra_args=["-vcodec", "libx264", "-pix_fmt", "yuv420p"])
-            print(f"  Saved MP4 → {mp4_path}")
-        except Exception as e:
-            print(f"  MP4 save failed (install ffmpeg): {e}")
-
     plt.close(fig2)
+    print(f"  Saved GIF → {gif_path}")
 
 
 def main():

@@ -44,12 +44,12 @@ print(f"Iterations: {metrics['n_iters']}")
 plot_convergence(
     history,
     problem_name=problem.name,
-    save_path="tutorial_nlpoisson_convergence.png",
+    save_path="../misc/tutorial_nlpoisson_convergence.png",
 )
 
 # Plot solution
 plot_solution_2d_contour(
     result["solver"],
     problem,
-    save_path="tutorial_nlpoisson_solution.png",
+    save_path="../misc/tutorial_nlpoisson_solution.png",
 )

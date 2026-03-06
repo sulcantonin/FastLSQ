@@ -14,6 +14,7 @@ from fastlsq.problems.regression import (
     SineGordon_Regression, KleinGordon_Regression, GrayScott_Pulse,
     NavierStokes2D_Kovasznay, Bratu2D_Regression, NLHelmholtz2D_Regression,
 )
+from fastlsq.problems.apebench import Advection1D, Diffusion1D, Burgers1D_Time
 
 __all__ = [
     # Linear (solver mode)
@@ -27,4 +28,6 @@ __all__ = [
     "SineGordon_Regression", "KleinGordon_Regression", "GrayScott_Pulse",
     "NavierStokes2D_Kovasznay", "Bratu2D_Regression",
     "NLHelmholtz2D_Regression",
+    # APEBench-style (space-time)
+    "Advection1D", "Diffusion1D", "Burgers1D_Time",
 ]
