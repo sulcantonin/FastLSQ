@@ -109,7 +109,7 @@ python examples/run_nonlinear.py
 The analytical derivatives enable gradients through the pre-factored solve, making inverse problems tractable. Example: recovering 4 anisotropic Gaussian heat sources (24 parameters) from 4 sparse sensors:
 
 <p align="center">
-  <img src="https://github.com/sulcantonin/FastLSQ/raw/main/misc/inverse_heat_source.png" alt="Inverse heat source localisation" width="700"/>
+  <img src="misc/inverse_heat_source.gif" alt="Inverse heat source localisation" width="700"/>
 </p>
 
 ```bash
