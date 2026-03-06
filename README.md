@@ -106,10 +106,12 @@ python examples/run_nonlinear.py
 
 ### Inverse problems
 
-The analytical derivatives enable gradients through the pre-factored solve, making inverse problems tractable. Example: recovering 4 anisotropic Gaussian heat sources (24 parameters) from 4 sparse sensors:
+The analytical derivatives enable gradients through the pre-factored solve, making inverse problems tractable. Example: recovering 4 anisotropic Gaussian heat sources (24 parameters) from 4 sparse sensors. The heat equation is solved in space-time; L-BFGS-B optimises source positions and shapes to match sensor time-series. *(Click image for animation.)*
 
 <p align="center">
-  <img src="misc/inverse_heat_source.gif" alt="Inverse heat source localisation" width="700"/>
+  <a href="misc/inverse_heat_source.gif">
+    <img src="misc/inverse_heat_source.png" alt="Inverse heat source localisation" width="700"/>
+  </a>
 </p>
 
 ```bash
