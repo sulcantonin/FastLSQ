@@ -60,6 +60,7 @@ print(f"Value error: {result['metrics']['val_err']:.2e}")
 ### Use the basis directly
 
 ```python
+import torch
 from fastlsq.basis import SinusoidalBasis
 
 basis = SinusoidalBasis.random(input_dim=2, n_features=1500, sigma=5.0)
@@ -77,8 +78,14 @@ lap_H = basis.laplacian(x)           # (5000, 1500)
 ### Compose PDE operators symbolically
 
 ```python
-from fastlsq.basis import Op
+import torch
+from fastlsq.basis import SinusoidalBasis, Op
 
+basis = SinusoidalBasis.random(input_dim=2, n_features=1500, sigma=5.0)
+x = torch.rand(5000, 2)
+
+# Coefficients can be scalars or nn.Parameter (for AdamW optimisation)
+k, c = 10.0, 2.0
 helmholtz = Op.laplacian(d=2) + k**2 * Op.identity(d=2)
 A_pde = helmholtz.apply(basis, x)    # (5000, 1500)
 
@@ -102,6 +109,9 @@ python examples/run_linear.py
 
 # Nonlinear PDE benchmark (Newton-Raphson)
 python examples/run_nonlinear.py
+
+# Learnable Helmholtz wavenumber (nn.Parameter + AdamW)
+python examples/learnable_helmholtz.py
 ```
 
 ### Inverse problems
@@ -127,7 +137,7 @@ derivative engine:
 |-------|---------|
 | `SinusoidalBasis` | Evaluates basis functions and arbitrary-order derivatives in O(1) via the cyclic identity |
 | `BasisCache` | Pre-computes sin(Z)/cos(Z) once, reuses across multiple derivative evaluations |
-| `DiffOperator` / `Op` | Symbolic linear differential operators that compose via +, -, scalar * |
+| `DiffOperator` / `Op` | Symbolic linear differential operators that compose via +, -, scalar *; coefficients can be `nn.Parameter` for learnable PDEs |
 | `FeatureBasis` | Adapter for non-sinusoidal solvers (e.g. PIELM with tanh) |
 | `FastLSQSolver` | Manages feature blocks; exposes `.basis` for all derivative computations |
 | `LearnableFastLSQ` | Differentiable solver with learnable bandwidth via reparameterisation trick |
@@ -206,9 +216,10 @@ See `examples/add_your_own_pde.py` for the complete tutorial.
 ## Features
 
 - **Analytical derivative engine**: `SinusoidalBasis` computes arbitrary-order derivatives exactly in O(1) -- the foundation of the entire framework
-- **Symbolic PDE operators**: Compose differential operators with `Op` (Laplacian, wave, Helmholtz, biharmonic, custom) via intuitive arithmetic
+- **Symbolic PDE operators**: Compose differential operators with `Op` (Laplacian, wave, Helmholtz, biharmonic, custom) via intuitive arithmetic; coefficients can be `nn.Parameter` for AdamW optimisation
 - **High-level API**: Solve PDEs in one line with `solve_linear()` and `solve_nonlinear()`
 - **Learnable bandwidth**: `LearnableFastLSQ` optimises the bandwidth (scalar or anisotropic) via reparameterisation
+- **Learnable PDE coefficients**: Plug `nn.Parameter` into `Op` (e.g. Helmholtz wavenumber `k`) and optimise via AdamW; gradients flow through the prebuilt linear solve
 - **Auto-tuning**: Automatic scale selection via grid search
 - **Built-in plotting**: Solution visualization, convergence plots, spectral sensitivity
 - **Geometry samplers**: Box, ball, sphere, interval, custom samplers

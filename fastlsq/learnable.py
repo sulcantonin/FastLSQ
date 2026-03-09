@@ -2,12 +2,12 @@
 # Licensed under the MIT License. See LICENSE file for details.
 
 """
-Learnable bandwidth solver for FastLSQ.
+Learnable bandwidth and parametric PDE solvers for FastLSQ.
 
-Provides `LearnableFastLSQ`, a PyTorch nn.Module that wraps the Fast-LSQ
-one-shot solver inside a differentiable outer loop.  The bandwidth parameter
-(scalar sigma or full Cholesky factor L) is optimised via AdamW while the
-inner linear coefficients beta are solved exactly at each step.
+Provides:
+* **LearnableFastLSQ** -- bandwidth (sigma / Cholesky L) optimised via AdamW.
+* **LearnableParametricPDE** -- PDE operator coefficients (e.g. k, c) as
+  nn.Parameters, pluggable into the prebuilt linear solve and AdamW.
 
 Key ideas
 ---------
@@ -17,6 +17,10 @@ Key ideas
 * **Inner exact solve** -- for each L, the PDE matrix A(L) is assembled
   analytically via the cyclic derivative formula and beta*(L) = A(L)^+ b
   is computed in one shot.  Gradients flow back through `torch.linalg.lstsq`.
+* **Learnable operator coefficients** -- Op accepts nn.Parameter in scalar
+  multiplication, e.g. ``Op.laplacian(d=2) + k**2 * Op.identity(d=2)`` with
+  ``k = nn.Parameter(...)``.  Build the operator inside forward() so it
+  uses current parameter values; gradients flow through the lstsq to k.
 * **Matrix caching** -- when the PDE operator and geometry stay fixed but
   the source / boundary data change, the pseudo-inverse A^+ can be cached
   and reused for O(MN) per new right-hand side.

@@ -2,6 +2,12 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Learnable operator coefficients**: `Op` now accepts `nn.Parameter` (and tensors) as coefficients in scalar multiplication. Use `k = nn.Parameter(...)` with `Op.laplacian(d=2) + k**2 * Op.identity(d=2)` and optimise via AdamW; gradients flow through the prebuilt linear solve. See `examples/learnable_helmholtz.py`.
+
 ## [0.2.0] - 2026-03-01
 
 ### Added

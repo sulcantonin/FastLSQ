@@ -151,8 +151,19 @@ def test_geometry_samplers():
     assert torch.all(norms <= 1.0)
 
 
-def test_export():
-    """Test export utilities."""
+def test_op_learnable_parameter():
+    """Test Op accepts nn.Parameter and gradients flow through apply()."""
+    from fastlsq.basis import SinusoidalBasis
+
+    k = torch.nn.Parameter(torch.tensor(10.0))
+    helmholtz = Op.laplacian(d=2) + k**2 * Op.identity(d=2)
+    basis = SinusoidalBasis.random(input_dim=2, n_features=50, sigma=3.0)
+    x = torch.rand(20, 2)
+    A = helmholtz.apply(basis, x)
+    assert A.shape == (20, 50)
+    loss = A.sum()
+    loss.backward()
+    assert k.grad is not None
     solver = FastLSQSolver(input_dim=2)
     solver.add_block(hidden_size=10, scale=1.0)
     solver.beta = torch.randn(10, 1)

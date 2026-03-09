@@ -34,6 +34,11 @@ Example
 >>> helmholtz = Op.laplacian(d=2) + k**2 * Op.identity(d=2)
 >>> A_pde = helmholtz.apply(basis, x)          # (5000, 1000)
 >>>
+>>> # Learnable coefficients: plug nn.Parameter for AdamW optimisation
+>>> k = torch.nn.Parameter(torch.tensor(10.0))
+>>> helmholtz = Op.laplacian(d=2) + k**2 * Op.identity(d=2)
+>>> A_pde = helmholtz.apply(basis, x)         # differentiable w.r.t. k
+>>>
 >>> # Or use fast-path methods directly
 >>> A_pde_fast = basis.laplacian(x) + k**2 * basis.evaluate(x)  # same result
 """
@@ -45,6 +50,9 @@ import numpy as np
 from typing import Optional, Sequence, Union
 
 from fastlsq.utils import device
+
+# Type for operator term coefficients: scalars or learnable tensors (nn.Parameter)
+CoeffT = Union[float, int, torch.Tensor]
 
 
 # ======================================================================
@@ -317,7 +325,7 @@ class SinusoidalBasis:
     def operator(
         self,
         x: torch.Tensor,
-        terms: list[tuple[float, Union[tuple, dict]]],
+        terms: list[tuple[CoeffT, Union[tuple, dict]]],
         cache: Optional[BasisCache] = None,
     ) -> torch.Tensor:
         """Evaluate a linear differential operator L = Σ_i c_i D^{α_i}.
@@ -326,7 +334,8 @@ class SinusoidalBasis:
         ----------
         x : Tensor (M, d)
         terms : list of (coeff, alpha)
-            coeff: scalar coefficient.
+            coeff: scalar coefficient (float) or learnable tensor (e.g. nn.Parameter).
+                   Tensors enable gradients to flow through operator coefficients.
             alpha: multi-index as a tuple of length d, or a dict
                    {dim: order} (unspecified dims default to 0).
         cache : BasisCache, optional
@@ -342,7 +351,7 @@ class SinusoidalBasis:
         >>> basis.operator(x, [
         ...     (1.0, (2, 0)),   # u_xx
         ...     (1.0, (0, 2)),   # u_yy
-        ...     (k**2, (0, 0)),  # k² u
+        ...     (k**2, (0, 0)),  # k² u (k can be nn.Parameter)
         ... ])
         """
         if cache is None:
@@ -376,8 +385,11 @@ class DiffOperator:
     Evaluate on a ``SinusoidalBasis`` with ``.apply(basis, x)``.
     """
 
-    def __init__(self, terms: Optional[list[tuple[float, tuple[int, ...]]]] = None):
-        self.terms: list[tuple[float, tuple[int, ...]]] = terms or []
+    def __init__(
+        self,
+        terms: Optional[list[tuple[CoeffT, tuple[int, ...]]]] = None,
+    ):
+        self.terms: list[tuple[CoeffT, tuple[int, ...]]] = terms or []
 
     # ------------------------------------------------------------------
     # Arithmetic composition
@@ -394,10 +406,12 @@ class DiffOperator:
     def __neg__(self) -> DiffOperator:
         return DiffOperator([(-c, a) for c, a in self.terms])
 
-    def __mul__(self, scalar: float) -> DiffOperator:
+    def __mul__(self, scalar: CoeffT) -> DiffOperator:
+        """Scale operator by a scalar or learnable tensor (e.g. nn.Parameter)."""
         return DiffOperator([(c * scalar, a) for c, a in self.terms])
 
-    def __rmul__(self, scalar: float) -> DiffOperator:
+    def __rmul__(self, scalar: CoeffT) -> DiffOperator:
+        """Scale operator by a scalar or learnable tensor (e.g. nn.Parameter)."""
         return self.__mul__(scalar)
 
     # ------------------------------------------------------------------
@@ -481,11 +495,15 @@ class DiffOperator:
             return "DiffOperator(0)"
         parts = []
         for c, a in self.terms:
+            if isinstance(c, torch.Tensor):
+                c_str = f"{c.item():g}" if c.numel() == 1 else "tensor(...)"
+            else:
+                c_str = f"{c:g}"
             if all(ak == 0 for ak in a):
-                parts.append(f"{c:g}*I")
+                parts.append(f"{c_str}*I")
             else:
                 idx = ",".join(str(ak) for ak in a)
-                parts.append(f"{c:g}*D({idx})")
+                parts.append(f"{c_str}*D({idx})")
         return "DiffOperator(" + " + ".join(parts) + ")"
 
 

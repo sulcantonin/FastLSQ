@@ -100,3 +100,8 @@ if __name__ == "__main__":
 
     bih = Op.biharmonic(d=2)
     print(f"  Biharmonic:        {bih}")
+
+    # Learnable coefficients: use nn.Parameter for AdamW optimisation
+    # k = torch.nn.Parameter(torch.tensor(10.0))
+    # helmholtz = Op.laplacian(d=2) + k**2 * Op.identity(d=2)
+    # See examples/learnable_helmholtz.py for the full workflow.
