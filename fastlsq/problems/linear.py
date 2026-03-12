@@ -299,6 +299,144 @@ class Wave2D_MS:
 
 
 # ======================================================================
+# 2D Elastic wave equation (displacement formulation)
+# ======================================================================
+
+class ElasticWave2D:
+    """2D elastic wave equation: 2 equations, 2 unknowns (u_x, u_y), 2 wave speeds.
+
+    Displacement formulation:
+        u_x_tt = c_p² u_x_xx + c_s² u_x_yy + (c_p² - c_s²) u_y_xy
+        u_y_tt = c_p² u_y_yy + c_s² u_y_xx + (c_p² - c_s²) u_x_xy
+
+    Domain: (x, y, t) in [0,1]³ with t normalised. Uses a P-wave + S-wave
+    superposition as exact solution.
+    """
+
+    def __init__(self, c_p: float = 2.0, c_s: float = 1.0, t_max: float = 2.0):
+        self.name = "Elastic Wave 2D"
+        self.dim = 3  # x, y, t
+        self.c_p = c_p
+        self.c_s = c_s
+        self.c_p2 = c_p ** 2
+        self.c_s2 = c_s ** 2
+        self.c_cross = self.c_p2 - self.c_s2  # coupling coefficient
+        self.t_max = t_max
+        # Wave numbers for exact solution (P-wave mode)
+        self.kx = np.pi
+        self.ky = np.pi
+        self.omega_p = self.c_p * np.sqrt(self.kx ** 2 + self.ky ** 2)
+
+    def exact_ux(self, x_in):
+        """u_x component of exact solution (P-wave: dilatational)."""
+        xv, yv, tv = x_in[:, 0:1], x_in[:, 1:2], x_in[:, 2:3] * self.t_max
+        return (self.kx * torch.cos(self.kx * xv) * torch.sin(self.ky * yv)
+                * torch.cos(self.omega_p * tv))
+
+    def exact_uy(self, x_in):
+        """u_y component of exact solution."""
+        xv, yv, tv = x_in[:, 0:1], x_in[:, 1:2], x_in[:, 2:3] * self.t_max
+        return (self.ky * torch.sin(self.kx * xv) * torch.cos(self.ky * yv)
+                * torch.cos(self.omega_p * tv))
+
+    def exact(self, x_in):
+        """Stack (u_x, u_y) for BCs. Returns (N, 2)."""
+        return torch.cat([self.exact_ux(x_in), self.exact_uy(x_in)], dim=1)
+
+    def exact_ut(self, x_in):
+        """Time derivative (u_x_t, u_y_t) for IC."""
+        xv, yv, tv = x_in[:, 0:1], x_in[:, 1:2], x_in[:, 2:3] * self.t_max
+        fac = -self.omega_p * self.t_max * torch.sin(self.omega_p * tv)
+        ux_t = (self.kx * torch.cos(self.kx * xv) * torch.sin(self.ky * yv) * fac)
+        uy_t = (self.ky * torch.sin(self.kx * xv) * torch.cos(self.ky * yv) * fac)
+        return torch.cat([ux_t, uy_t], dim=1)
+
+    def get_train_data(self, n_pde=5000, n_bc=1000):
+        x_pde = torch.rand(n_pde, 3, device=device)
+        x_ic = torch.cat([
+            torch.rand(n_bc, 2, device=device),
+            torch.zeros(n_bc, 1, device=device),
+        ], 1)
+        u_ic = self.exact(x_ic)
+        ut_ic = self.exact_ut(x_ic)
+        n_wall = n_bc // 4
+        r_t = torch.rand(n_wall, 1, device=device)
+        r_s = torch.rand(n_wall, 1, device=device)
+        zeros = torch.zeros(n_wall, 1, device=device)
+        ones = torch.ones(n_wall, 1, device=device)
+        x_bc = torch.cat([
+            torch.cat([zeros, r_s, r_t], 1),
+            torch.cat([ones, r_s, r_t], 1),
+            torch.cat([r_s, zeros, r_t], 1),
+            torch.cat([r_s, ones, r_t], 1),
+        ], 0)
+        u_bc = self.exact(x_bc)
+        return x_pde, [
+            (x_ic, u_ic, "dirichlet"),
+            (x_ic, ut_ic, "neumann_t"),
+            (x_bc, u_bc, "dirichlet"),
+        ], None
+
+    def build(self, slv, x_pde, bcs, f_pde_ignored):
+        """Build block system for coupled (u_x, u_y). Returns A (M, 2N), b (M, 1)."""
+        basis = slv.basis
+        cache = basis.cache(x_pde)
+        N = basis.n_features
+
+        # Derivatives for (x, y, t) with t as dim 2
+        u_xx = basis.derivative(x_pde, (2, 0, 0), cache=cache)
+        u_yy = basis.derivative(x_pde, (0, 2, 0), cache=cache)
+        u_tt = basis.derivative(x_pde, (0, 0, 2), cache=cache)
+        u_xy = basis.derivative(x_pde, (1, 1, 0), cache=cache)
+
+        # t is normalised to [0,1]; physical d²/dt² = (1/t_max)² d²/dτ²
+        t_scale = self.t_max ** 2
+
+        # PDE1: u_x_tt - c_p² u_x_xx - c_s² u_x_yy - (c_p² - c_s²) u_y_xy = 0
+        A1_x = t_scale * u_tt - self.c_p2 * u_xx - self.c_s2 * u_yy
+        A1_y = -self.c_cross * u_xy
+
+        # PDE2: u_y_tt - c_p² u_y_yy - c_s² u_y_xx - (c_p² - c_s²) u_x_xy = 0
+        A2_x = -self.c_cross * u_xy
+        A2_y = t_scale * u_tt - self.c_p2 * u_yy - self.c_s2 * u_xx
+
+        A_pde = torch.cat([
+            torch.cat([A1_x, A1_y], dim=1),
+            torch.cat([A2_x, A2_y], dim=1),
+        ], dim=0)
+        b_pde = torch.zeros(2 * len(x_pde), 1, device=device)
+
+        As, bs = [A_pde], [b_pde]
+        w_bc = 1000.0
+
+        for (pts, vals, type_) in bcs:
+            h = basis.evaluate(pts)
+            dh = basis.gradient(pts)
+            n_pts = len(pts)
+            if type_ == "dirichlet":
+                # vals: (N_pts, 2) for u_x, u_y
+                H_block_x = torch.cat([h, torch.zeros_like(h)], dim=1)
+                H_block_y = torch.cat([torch.zeros_like(h), h], dim=1)
+                A_bc = torch.cat([H_block_x, H_block_y], dim=0) * w_bc
+                b_bc = torch.cat([vals[:, 0:1], vals[:, 1:2]], dim=0) * w_bc
+            elif type_ == "neumann_t":
+                dh_t = dh[:, 2, :]
+                D_block_x = torch.cat([dh_t, torch.zeros_like(dh_t)], dim=1)
+                D_block_y = torch.cat([torch.zeros_like(dh_t), dh_t], dim=1)
+                A_bc = torch.cat([D_block_x, D_block_y], dim=0) * w_bc
+                b_bc = torch.cat([vals[:, 0:1], vals[:, 1:2]], dim=0) * w_bc
+            else:
+                continue
+            As.append(A_bc)
+            bs.append(b_bc)
+
+        return torch.cat(As), torch.cat(bs)
+
+    def get_test_points(self, n=2000):
+        return torch.rand(n, 3, device=device)
+
+
+# ======================================================================
 # Helmholtz equation in 2-D (linear)
 # ======================================================================
 
