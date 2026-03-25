@@ -1,10 +1,12 @@
 # FastLSQ
 
+[BerkeleyLab ATAP Talk](https://github.com/sulcantonin/FastLSQ/raw/main/presentations/ATAP_Sulc_20260324.pptx)
+
+
 <p align="center">
   <img src="misc/fastlsq_teaser.png" alt="FastLSQ method overview" width="400"/>
 </p>
 
-[BerkeleyLab ATAP Talk](https://github.com/sulcantonin/FastLSQ/raw/main/presentations/ATAP_Sulc_20260324.pptx)
 **Solving PDEs in one shot via Fourier features with exact analytical derivatives.**
 
 FastLSQ is a lightweight PDE solver built around `SinusoidalBasis`, an
