@@ -95,6 +95,78 @@ A_pde = helmholtz.apply(basis, x)    # (5000, 1500)
 wave = Op.partial(dim=2, order=2, d=3) - c**2 * Op.laplacian(d=3, dims=[0, 1])
 ```
 
+### Vector-valued solutions
+
+`solve_linear` / `solve_nonlinear` support vector-valued **u**: ℝᵈ → ℝᵏ for
+coupled systems (elasticity, Stokes, Maxwell vector potential, …) and for
+decoupled multi-output problems sharing one basis. The math is unchanged; the
+solver just allocates `beta` with shape `(N, k)` so that `solver.predict(x)`
+returns shape `(M, k)` directly.
+
+A problem opts in by setting `self.n_outputs = k` and assembling its operator
+in block-stacked form `A ∈ ℝ^{Mk × Nk}`, `b ∈ ℝ^{Mk × 1}`. The helper
+`block_concat` removes the manual `torch.cat` bookkeeping:
+
+```python
+import torch
+from fastlsq import solve_linear, block_concat
+
+class Stokes2D:
+    n_outputs = 3        # (u, v, p)
+    dim = 2
+    name = "Stokes 2D"
+    # ... exact, exact_grad, get_train_data, get_test_points ...
+
+    def build(self, slv, x, bcs, f):
+        basis = slv.basis
+        cache = basis.cache(x)
+        dx = basis.derivative(x, (1, 0), cache=cache)
+        dy = basis.derivative(x, (0, 1), cache=cache)
+        lap = basis.laplacian(x, cache=cache)
+
+        # Rows = equations (mom_x, mom_y, continuity);
+        # columns = coefficient blocks (u, v, p)
+        A = block_concat([
+            [-lap,  None,  dx  ],   # -Δu + ∂p/∂x = f_x
+            [ None, -lap,  dy  ],   # -Δv + ∂p/∂y = f_y
+            [ dx,   dy,    None],   #  ∂u/∂x + ∂v/∂y = 0
+        ])
+        b = block_concat([[f[:, 0:1]], [f[:, 1:2]], [torch.zeros_like(f[:, 0:1])]])
+        # ... add BC blocks the same way ...
+        return A, b
+
+result = solve_linear(Stokes2D(), scale=5.0)
+u = result["u_fn"](x_test)        # shape (M, 3): columns are (u, v, p)
+```
+
+#### Partial derivatives for a vector u
+
+The basis-level operators (`basis.derivative`, `basis.gradient`,
+`basis.laplacian`, `DiffOperator.apply`) all return shape `(M, N)` regardless
+of how many components `u` has — vector-ness only enters when you contract
+with `beta`:
+
+```python
+# Full Jacobian, then slice (M, d, k) -> per (component, dim)
+u, J = solver.predict_with_grad(x)   # J shape (M, d, k); J[:, j, c] = ∂u_c/∂x_j
+
+# Single operator on a single component
+D_y = solver.basis.derivative(x, alpha=(0, 1))   # (M, N): ∂φ/∂y
+du0_dy = D_y @ solver.beta[:, 0:1]               # ∂u_0/∂y
+
+# Symbolic operator, all components at once
+from fastlsq import Op
+yy = Op.partial(dim=1, order=2, d=2)
+A  = yy.apply(solver.basis, x)                   # (M, N)
+u_yy = A @ solver.beta                           # (M, k): ∂²u/∂y² per component
+```
+
+Scalar problems are untouched: `n_outputs` defaults to `1`, `solver.beta` keeps
+shape `(N, 1)`, and `predict_with_grad` returns gradient shape `(M, d)` for
+backward compatibility (the trailing component axis is squeezed when k=1).
+`ElasticWave2D` in [fastlsq/problems/linear.py](fastlsq/problems/linear.py) is
+the canonical coupled vector example.
+
 ### Plot solutions
 
 ```python
@@ -144,6 +216,7 @@ derivative engine:
 | `FeatureBasis` | Adapter for non-sinusoidal solvers (e.g. PIELM with tanh) |
 | `FastLSQSolver` | Manages feature blocks; exposes `.basis` for all derivative computations |
 | `LearnableFastLSQ` | Differentiable solver with learnable bandwidth via reparameterisation trick |
+| `block_concat`, `pack_beta`, `unpack_beta` | Block-structured assembly helpers for vector-valued **u** (coupled systems). `solver.beta` has shape `(N, k)`; scalar problems are the k=1 case |
 
 ### How it works
 
@@ -220,6 +293,7 @@ See `examples/add_your_own_pde.py` for the complete tutorial.
 
 - **Analytical derivative engine**: `SinusoidalBasis` computes arbitrary-order derivatives exactly in O(1) -- the foundation of the entire framework
 - **Symbolic PDE operators**: Compose differential operators with `Op` (Laplacian, wave, Helmholtz, biharmonic, custom) via intuitive arithmetic; coefficients can be `nn.Parameter` for AdamW optimisation
+- **Vector-valued solutions**: First-class support for **u**: ℝᵈ → ℝᵏ (elasticity, Stokes, Maxwell). Problems declare `n_outputs = k`; `block_concat` assembles coupled block systems; `solver.predict(x)` returns shape `(M, k)`. Scalar problems are the `k=1` case
 - **High-level API**: Solve PDEs in one line with `solve_linear()` and `solve_nonlinear()`
 - **Learnable bandwidth**: `LearnableFastLSQ` optimises the bandwidth (scalar or anisotropic) via reparameterisation
 - **Learnable PDE coefficients**: Plug `nn.Parameter` into `Op` (e.g. Helmholtz wavenumber `k`) and optimise via AdamW; gradients flow through the prebuilt linear solve

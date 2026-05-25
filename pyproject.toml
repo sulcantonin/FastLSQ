@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "FastLSQ"
-version = "0.1.4"
+version = "0.1.5"
 description = "Solving PDEs in one shot via Fourier features with exact analytical derivatives"
 readme = "README.md"
 license = "MIT"
@@ -38,6 +38,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+battery = [
+    "progpy>=1.3",
+    "pandas>=2.0",
+    "scipy>=1.10",
+]
 dev = [
     "pytest>=7.0",
     "pandas>=2.0",

@@ -9,6 +9,7 @@ from typing import Optional, Callable
 
 from fastlsq.solvers import FastLSQSolver
 from fastlsq.linalg import solve_lstsq
+from fastlsq.block import unpack_beta
 from fastlsq.newton import build_solver_with_scale, get_initial_guess, newton_solve
 from fastlsq.utils import device, evaluate_error
 
@@ -56,6 +57,7 @@ def auto_select_scale(
 
     best_scale = scales[0]
     best_error = float("inf")
+    n_outputs = getattr(problem, "n_outputs", 1)
 
     for scale in scales:
         errors = []
@@ -68,7 +70,9 @@ def auto_select_scale(
                     solver = solver_class(problem.dim)
                     for _ in range(n_blocks):
                         solver.add_block(hidden_size=hidden_size, scale=scale)
-                    solver.beta = torch.zeros(solver.n_features, 1, device=device)
+                    solver.beta = torch.zeros(
+                        solver.n_features, n_outputs, device=device
+                    )
 
                     x_pde, bcs, f_pde = problem.get_train_data(n_pde=n_pde, n_bc=n_bc)
                     get_initial_guess(solver, problem, x_pde, bcs, f_pde, mu=1e-10)
@@ -96,7 +100,10 @@ def auto_select_scale(
                         build_args = (bcs,)
 
                     A, b = problem.build(solver, x_pde, *build_args)
-                    solver.beta = solve_lstsq(A, b)
+                    beta_raw = solve_lstsq(A, b)
+                    solver.beta = unpack_beta(
+                        beta_raw, solver.n_features, n_outputs
+                    )
                     val_err, _ = evaluate_error(solver, problem, n_test=1000)
 
                 if np.isnan(val_err) or np.isinf(val_err):

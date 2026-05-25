@@ -15,6 +15,7 @@ import numpy as np
 
 from fastlsq.solvers import FastLSQSolver
 from fastlsq.linalg import solve_lstsq
+from fastlsq.block import unpack_beta
 from fastlsq.utils import device
 
 
@@ -22,12 +23,21 @@ from fastlsq.utils import device
 # Builder helper
 # ======================================================================
 
-def build_solver_with_scale(input_dim, scale, n_blocks=3, hidden=500):
-    """Create a normalised FastLSQSolver with zero initial weights."""
+def build_solver_with_scale(input_dim, scale, n_blocks=3, hidden=500, n_outputs=1):
+    """Create a normalised FastLSQSolver with zero initial weights.
+
+    Parameters
+    ----------
+    n_outputs : int
+        Number of output components for vector-valued solutions. ``beta``
+        is initialised to shape ``(n_features, n_outputs)``; for scalar
+        problems (default ``n_outputs=1``) this matches the historical
+        ``(n_features, 1)`` shape.
+    """
     solver = FastLSQSolver(input_dim, normalize=True)
     for _ in range(n_blocks):
         solver.add_block(hidden_size=hidden, scale=scale)
-    solver.beta = torch.zeros(solver.n_features, 1, device=device)
+    solver.beta = torch.zeros(solver.n_features, n_outputs, device=device)
     return solver
 
 
@@ -35,7 +45,9 @@ def get_initial_guess(solver, problem, x_pde, bcs, f_pde, mu=1e-10):
     """Solve the linear part of the PDE as a warm start for Newton."""
     if hasattr(problem, "build_linear_init"):
         A, b = problem.build_linear_init(solver, x_pde, bcs, f_pde)
-        solver.beta = solve_lstsq(A, b, mu=mu)
+        beta_raw = solve_lstsq(A, b, mu=mu)
+        n_outputs = getattr(problem, "n_outputs", 1)
+        solver.beta = unpack_beta(beta_raw, solver.n_features, n_outputs)
 
 
 # ======================================================================
@@ -73,14 +85,18 @@ def newton_solve(solver, problem, x_pde, bcs, f_pde,
     history : list[dict]
     """
     history = []
+    n_outputs = getattr(problem, "n_outputs", 1)
+    N = solver.n_features
 
     for it in range(max_iter):
         J, neg_R = problem.build_newton_step(solver, x_pde, bcs, f_pde)
         res_norm = torch.norm(neg_R).item()
 
-        delta_beta = solve_lstsq(J, neg_R, mu=mu)
+        delta_beta_raw = solve_lstsq(J, neg_R, mu=mu)
+        delta_beta = unpack_beta(delta_beta_raw, N, n_outputs)
 
-        # Solution-level change (meaningful convergence metric)
+        # Solution-level change (meaningful convergence metric);
+        # Frobenius norm handles vector u (shape (M, k)) naturally.
         H_pde = solver.basis.evaluate(x_pde)
         u_current = H_pde @ solver.beta
         du = H_pde @ delta_beta

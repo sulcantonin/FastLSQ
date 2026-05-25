@@ -6,6 +6,24 @@ All notable changes to FastLSQ will be documented in this file.
 
 ### Added
 
+- **Vector-valued solutions (`u: ℝᵈ → ℝᵏ`)**: first-class support for coupled
+  systems and decoupled multi-output PDEs. Problems opt in with
+  `self.n_outputs = k`; `solver.beta` has shape `(N, k)` and
+  `solver.predict(x)` returns `(M, k)`. Scalar problems are the `k=1` case
+  and remain bit-for-bit identical (Helmholtz 2D / Poisson 5D / Bratu 2D
+  regressions verified).
+  - New module `fastlsq.block`: `block_concat` assembles a 2-D nested list
+    of `(M_i, N_j)` tensors into a block matrix (with `None` for zero
+    blocks); `pack_beta` / `unpack_beta` convert between `(N, k)` and the
+    block-stacked `(N*k, 1)` solve representation.
+  - `predict_with_grad` / `predict_with_laplacian` einsum fixed to
+    `"idh,hk->idk"` so the output dim no longer collapses for `k>1`. Squeezes
+    back to `(M, d)` when `k=1` for backward compatibility.
+  - `ElasticWave2D` refactored: gains `n_outputs = 2`, `build()` uses
+    `block_concat`, and now exposes `exact_grad` with shape `(M, d, k)`.
+  - `LearnableFastLSQ` accepts `n_outputs`; legacy subclasses that store a
+    flat `(Nk, 1)` `beta` (e.g. `ElasticLearnable` in the elastic wave
+    example) keep working under the default `n_outputs=1`.
 - **Learnable operator coefficients**: `Op` now accepts `nn.Parameter` (and tensors) as coefficients in scalar multiplication. Use `k = nn.Parameter(...)` with `Op.laplacian(d=2) + k**2 * Op.identity(d=2)` and optimise via AdamW; gradients flow through the prebuilt linear solve. See `examples/learnable_helmholtz.py`.
 
 ## [0.2.0] - 2026-03-01

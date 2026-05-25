@@ -35,6 +35,7 @@ from typing import Optional
 
 from fastlsq.utils import device
 from fastlsq.basis import SinusoidalBasis
+from fastlsq.block import unpack_beta
 
 
 class LearnableFastLSQ(nn.Module):
@@ -63,10 +64,12 @@ class LearnableFastLSQ(nn.Module):
         mode: str = "scalar",
         init_scale: float = 1.0,
         normalize: bool = True,
+        n_outputs: int = 1,
     ):
         super().__init__()
         self.input_dim = input_dim
         self.n_features = n_features
+        self.n_outputs = n_outputs
         self.mode = mode
         self._normalize = normalize
 
@@ -94,6 +97,10 @@ class LearnableFastLSQ(nn.Module):
             raise ValueError(f"Unknown mode {mode!r}")
 
         self.beta: Optional[torch.Tensor] = None
+        # Flat (Nk, 1) coefficient vector kept alongside the (N, k) shaped
+        # `self.beta` so that block-structured residual losses
+        # ``A @ beta_flat - b`` work without re-packing.
+        self._beta_flat: Optional[torch.Tensor] = None
         self._cached_pinv: Optional[torch.Tensor] = None
 
     # ------------------------------------------------------------------
@@ -152,7 +159,9 @@ class LearnableFastLSQ(nn.Module):
         H = b.evaluate(x, cache=cache)
         dH = b.gradient(x, cache=cache)
         u = H @ self.beta
-        grad_u = torch.einsum("idh,ho->id", dH, self.beta)
+        grad_u = torch.einsum("idh,hk->idk", dH, self.beta)
+        if grad_u.shape[-1] == 1:
+            grad_u = grad_u.squeeze(-1)
         return u, grad_u
 
     # ------------------------------------------------------------------
@@ -163,15 +172,30 @@ class LearnableFastLSQ(nn.Module):
         """Solve beta* = argmin ||A beta - b||^2 + mu ||beta||^2.
 
         Uses `torch.linalg.lstsq` so that gradients flow back to L.
+
+        For ``n_outputs > 1`` the input system is assumed block-stacked
+        (``A`` of shape ``(M*k, N*k)``, ``b`` of shape ``(M*k, 1)``). The
+        flat solution is exposed as ``self._beta_flat`` for residual losses
+        while ``self.beta`` is reshaped to ``(N, k)`` for prediction.
         """
         if mu > 0:
-            N = A.shape[1]
-            I_reg = torch.eye(N, device=A.device, dtype=A.dtype) * np.sqrt(mu)
+            cols = A.shape[1]
+            I_reg = torch.eye(cols, device=A.device, dtype=A.dtype) * np.sqrt(mu)
             A_aug = torch.cat([A, I_reg], dim=0)
-            b_aug = torch.cat([b, torch.zeros(N, 1, device=A.device)], dim=0)
-            self.beta = torch.linalg.lstsq(A_aug, b_aug).solution
+            b_aug = torch.cat([b, torch.zeros(cols, 1, device=A.device)], dim=0)
+            beta_flat = torch.linalg.lstsq(A_aug, b_aug).solution
         else:
-            self.beta = torch.linalg.lstsq(A, b).solution
+            beta_flat = torch.linalg.lstsq(A, b).solution
+        self._beta_flat = beta_flat
+        # When n_outputs > 1 we reshape the flat block solution to (N, k)
+        # so that predict() works directly. When n_outputs == 1 we leave the
+        # tensor untouched so that legacy subclasses (e.g. ElasticLearnable
+        # in the example, which stores beta as (2N, 1) and splits it manually)
+        # continue to work.
+        if self.n_outputs > 1:
+            self.beta = unpack_beta(beta_flat, self.n_features, self.n_outputs)
+        else:
+            self.beta = beta_flat
         return self.beta
 
     # ------------------------------------------------------------------
@@ -249,7 +273,9 @@ def train_bandwidth(
         A, b_rhs = problem.build(learnable, x_pde, bcs, f_pde)
         learnable.solve_inner(A, b_rhs, mu=mu)
 
-        residual = A @ learnable.beta - b_rhs
+        # _beta_flat is always shape-compatible with A (block-stacked when
+        # n_outputs > 1); learnable.beta may be reshaped to (N, k).
+        residual = A @ learnable._beta_flat - b_rhs
         loss = torch.sum(residual ** 2)
 
         loss.backward()
