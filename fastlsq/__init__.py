@@ -10,8 +10,10 @@ Reference:
     Analytical Derivatives," arXiv:2602.10541, 2026.
 """
 
+from fastlsq.device import resolve_device, set_device, get_device, device_info
 from fastlsq.basis import SinusoidalBasis, BasisCache, DiffOperator, Op, FeatureBasis
 from fastlsq.solvers import FastLSQSolver, PIELMSolver
+from fastlsq.vector  import VectorBasis, VectorFastLSQSolver
 from fastlsq.linalg import solve_lstsq
 from fastlsq.api import solve_linear, solve_nonlinear
 from fastlsq.tuning import auto_select_scale
@@ -39,15 +41,24 @@ from fastlsq.export import (
     save_checkpoint,
     load_checkpoint,
 )
+from fastlsq import viz
 
-__version__ = "0.1.0"
+__version__ = "0.2.1"
 __all__ = [
+    # Device selection (CPU / CUDA / Apple-MPS, dtype-aware)
+    "resolve_device",
+    "set_device",
+    "get_device",
+    "device_info",
     # Basis and operators (foundation)
     "SinusoidalBasis",
     "BasisCache",
     "DiffOperator",
     "Op",
     "FeatureBasis",
+    # Vector-valued basis  (0.1.5)
+    "VectorBasis",
+    "VectorFastLSQSolver",
     # Core solvers
     "FastLSQSolver",
     "PIELMSolver",

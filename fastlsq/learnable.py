@@ -28,12 +28,15 @@ Key ideas
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 from typing import Optional
 
-from fastlsq.utils import device
+from fastlsq.device import get_device
 from fastlsq.basis import SinusoidalBasis
 
 
@@ -72,23 +75,26 @@ class LearnableFastLSQ(nn.Module):
 
         # Frozen base weights: W_hat ~ N(0, I_d),  b ~ U(0, 2*pi)
         self.register_buffer(
-            "W_hat", torch.randn(input_dim, n_features, device=device)
+            "W_hat", torch.randn(input_dim, n_features, device=get_device())
         )
         self.register_buffer(
-            "b", torch.rand(1, n_features, device=device) * 2 * np.pi
+            "b", torch.rand(1, n_features, device=get_device()) * 2 * np.pi
         )
 
         # Learnable bandwidth parameters
         if mode == "scalar":
             self.log_sigma = nn.Parameter(
-                torch.tensor(np.log(init_scale), device=device)
+                torch.tensor(np.log(init_scale), device=get_device())
             )
         elif mode == "diagonal":
             self.log_diag = nn.Parameter(
-                torch.full((input_dim,), np.log(init_scale), device=device)
+                torch.full((input_dim,), np.log(init_scale), device=get_device())
             )
         elif mode == "cholesky":
-            L_init = torch.eye(input_dim, device=device) * init_scale
+            # exp(diag) keeps Sigma = L L^T positive-definite and learns at the
+            # same multiplicative rate as the diagonal mode; isotropic start.
+            L_init = torch.zeros(input_dim, input_dim, device=get_device())
+            L_init.diagonal().fill_(float(np.log(init_scale)))
             self.L_raw = nn.Parameter(L_init)
         else:
             raise ValueError(f"Unknown mode {mode!r}")
@@ -104,11 +110,13 @@ class LearnableFastLSQ(nn.Module):
         """Return the d x d scaling / Cholesky matrix."""
         if self.mode == "scalar":
             sigma = self.log_sigma.exp()
-            return sigma * torch.eye(self.input_dim, device=device)
+            return sigma * torch.eye(self.input_dim, device=get_device())
         elif self.mode == "diagonal":
-            return torch.diag(self.log_diag.exp())
-        else:
-            return torch.tril(self.L_raw)
+            return torch.diag(self.log_diag.clamp(-3.0, 6.5).exp())
+        else:  # cholesky: free strictly-lower part + log-positive diagonal
+            off = torch.tril(self.L_raw, diagonal=-1)
+            diag = torch.diagonal(self.L_raw).clamp(-3.0, 6.5).exp()
+            return off + torch.diag(diag)
 
     @property
     def sigma(self) -> torch.Tensor:
@@ -159,19 +167,19 @@ class LearnableFastLSQ(nn.Module):
     # One-step exact solve (inner loop)
     # ------------------------------------------------------------------
 
-    def solve_inner(self, A: torch.Tensor, b: torch.Tensor, mu: float = 0.0):
-        """Solve beta* = argmin ||A beta - b||^2 + mu ||beta||^2.
+    def solve_inner(self, A: torch.Tensor, b: torch.Tensor, mu: float = 0.0,
+                    rcond: float = 1e-12):
+        """Differentiable rank-revealing inner solve.
 
-        Uses `torch.linalg.lstsq` so that gradients flow back to L.
+        Solves ``beta* = argmin ||A beta - b||^2 + mu ||beta||^2`` through a
+        truncated SVD of ``A``, so gradients still flow back to ``L`` *and* the
+        solve is stable when ``A`` is rank-deficient.  (The plain
+        ``torch.linalg.lstsq`` used previously amplifies the near-null space and
+        makes the outer AdamW loop diverge -- see the Sigma-learning notes.)
         """
-        if mu > 0:
-            N = A.shape[1]
-            I_reg = torch.eye(N, device=A.device, dtype=A.dtype) * np.sqrt(mu)
-            A_aug = torch.cat([A, I_reg], dim=0)
-            b_aug = torch.cat([b, torch.zeros(N, 1, device=A.device)], dim=0)
-            self.beta = torch.linalg.lstsq(A_aug, b_aug).solution
-        else:
-            self.beta = torch.linalg.lstsq(A, b).solution
+        U, S, Vh = torch.linalg.svd(A, full_matrices=False)
+        filt = torch.where(S > rcond * S[0], S / (S * S + mu), torch.zeros_like(S))
+        self.beta = Vh.transpose(-2, -1) @ (filt.unsqueeze(-1) * (U.transpose(-2, -1) @ b))
         return self.beta
 
     # ------------------------------------------------------------------
@@ -195,6 +203,25 @@ class LearnableFastLSQ(nn.Module):
     def clear_cache(self):
         self._cached_pinv = None
 
+    # ------------------------------------------------------------------
+    # High-level fit: learn the bandwidth / covariance on a problem
+    # ------------------------------------------------------------------
+
+    def fit(self, problem, *, n_pde: int = 5000, n_bc: int = 1000,
+            n_steps: int = 120, lr: float = 0.1, mu: float = 0.0,
+            verbose: bool = True):
+        """Learn the bandwidth / covariance on ``problem`` and solve.
+
+        Convenience wrapper around :func:`train_bandwidth`; the training
+        hyper-parameters live here, not on the one-shot ``solve_linear``.
+        Returns ``self`` so calls can be chained::
+
+            u = LearnableFastLSQ(d, N, mode="cholesky").fit(problem).predict(x)
+        """
+        train_bandwidth(self, problem, n_pde=n_pde, n_bc=n_bc,
+                        n_steps=n_steps, lr=lr, mu=mu, verbose=verbose)
+        return self
+
 
 # ======================================================================
 # Training loop
@@ -206,66 +233,87 @@ def train_bandwidth(
     *,
     n_pde: int = 5000,
     n_bc: int = 1000,
-    n_steps: int = 100,
-    lr: float = 1e-2,
-    mu: float = 1e-10,
+    n_steps: int = 120,
+    lr: float = 0.1,
+    mu: float = 0.0,
+    rcond: float = 1e-12,
+    clip_grad: float = 10.0,
     verbose: bool = True,
 ) -> list[dict]:
-    """Hybrid training: inner exact solve + outer AdamW on bandwidth.
+    """Hybrid training: differentiable inner solve + outer AdamW on the bandwidth.
 
-    At each step:
-      1. Assemble PDE matrix A(L) analytically.
-      2. Solve beta*(L) = A(L)^+ b  exactly.
-      3. Compute loss = ||A(L) beta*(L) - b||^2.
-      4. Backprop through the lstsq to update L via AdamW.
+    At each step the PDE matrix ``A(L)`` is assembled, ``beta*(L)`` is solved by a
+    **rank-revealing** (truncated-SVD) inner solve, and the outer loss
+    ``||A beta* - b||^2`` is backpropagated to ``L``.  The loop is robust:
+    gradients are clipped, the best iterate is retained, and a failed inner SVD
+    stops training gracefully.  Defaults (``mu=0``, ``lr=0.1``) match the
+    validated diagonal/cholesky configuration.
+
+    On return, ``learnable`` holds the best-found ``L`` and a fresh ``beta``.
 
     Parameters
     ----------
     learnable : LearnableFastLSQ
-    problem : PDE problem with `get_train_data`, `build` or `build_newton_step`.
-    n_pde, n_bc : int
-        Collocation point counts.
-    n_steps : int
-        Number of outer optimisation steps.
-    lr : float
-        Learning rate for AdamW.
-    mu : float
-        Tikhonov regularisation inside the inner solve.
-    verbose : bool
+    problem : object with ``get_train_data(n_pde, n_bc)`` and ``build(learnable, x, bcs, f)``.
+    n_pde, n_bc, n_steps, lr, mu, rcond, clip_grad, verbose : see above.
 
     Returns
     -------
-    history : list[dict]
-        Per-step loss and sigma values.
+    history : list[dict]  -- per-step loss / sigma (and covariance diagonal for cholesky).
     """
     optimizer = torch.optim.AdamW(learnable.parameters(), lr=lr)
     history = []
-
     x_pde, bcs, f_pde = problem.get_train_data(n_pde=n_pde, n_bc=n_bc)
+
+    best_loss = float("inf")
+    best_params = None
 
     for step in range(n_steps):
         optimizer.zero_grad()
-
         A, b_rhs = problem.build(learnable, x_pde, bcs, f_pde)
-        learnable.solve_inner(A, b_rhs, mu=mu)
+        try:
+            learnable.solve_inner(A, b_rhs, mu=mu, rcond=rcond)
+        except torch.linalg.LinAlgError:
+            if verbose:
+                print(f"  Step {step:4d}: inner SVD failed -- stopping.")
+            break
 
-        residual = A @ learnable.beta - b_rhs
-        loss = torch.sum(residual ** 2)
-
+        loss = torch.mean((A @ learnable.beta - b_rhs) ** 2)
+        if not torch.isfinite(loss):
+            if verbose:
+                print(f"  Step {step:4d}: non-finite loss -- stopping.")
+            break
         loss.backward()
+        if any(p.grad is not None and not torch.isfinite(p.grad).all()
+               for p in learnable.parameters()):
+            if verbose:
+                print(f"  Step {step:4d}: non-finite gradient -- stopping.")
+            break
+        if clip_grad:
+            torch.nn.utils.clip_grad_norm_(learnable.parameters(), clip_grad)
         optimizer.step()
 
-        info = {
-            "step": step,
-            "loss": loss.item(),
-            "sigma": learnable.sigma.item(),
-        }
+        l = loss.item()
+        if l < best_loss:
+            best_loss = l
+            best_params = {n: p.detach().clone() for n, p in learnable.named_parameters()}
+
+        info = {"step": step, "loss": l, "sigma": learnable.sigma.item()}
         if learnable.mode == "cholesky":
             info["cov_diag"] = torch.diagonal(learnable.covariance).detach().cpu().tolist()
         history.append(info)
-
         if verbose and step % max(1, n_steps // 20) == 0:
-            print(f"  Step {step:4d}: loss={loss.item():.4e}  "
-                  f"sigma={info['sigma']:.4f}")
+            print(f"  Step {step:4d}: loss={l:.4e}  sigma={info['sigma']:.4f}")
+
+    # restore the best iterate and re-solve beta at it
+    if best_params is not None:
+        with torch.no_grad():
+            for n, p in learnable.named_parameters():
+                p.copy_(best_params[n])
+            try:
+                A, b_rhs = problem.build(learnable, x_pde, bcs, f_pde)
+                learnable.solve_inner(A, b_rhs, mu=mu, rcond=rcond)
+            except torch.linalg.LinAlgError:
+                pass
 
     return history

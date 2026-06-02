@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "FastLSQ"
-version = "0.1.4"
-description = "Solving PDEs in one shot via Fourier features with exact analytical derivatives"
+version = "0.2.1"
+description = "One-shot PDE solving via Fourier features with exact analytical derivatives; rank-revealing solvers, learnable anisotropic bandwidth, and CPU/CUDA/MPS support"
 readme = "README.md"
 license = "MIT"
 authors = [{name = "Antonin Sulc"}]
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 keywords = [
     "pde",
     "partial-differential-equations",
@@ -25,6 +25,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",

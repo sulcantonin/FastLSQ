@@ -19,7 +19,8 @@ from fastlsq.newton import (
     build_solver_with_scale, get_initial_guess,
     newton_solve, continuation_solve,
 )
-from fastlsq.utils import device, evaluate_error
+from fastlsq.utils import evaluate_error
+from fastlsq.device import get_device
 from fastlsq.tuning import auto_select_scale
 
 
@@ -44,6 +45,10 @@ def solve_linear(
     verbose: bool = True,
 ) -> Dict[str, Any]:
     """Solve a linear PDE in one shot.
+
+    To learn the random-feature bandwidth / anisotropic covariance Sigma = L L^T
+    instead of using a fixed ``scale``, use ``LearnableFastLSQ(...).fit(problem)``
+    (the training hyper-parameters live there, keeping this solve one-shot).
 
     Parameters
     ----------
@@ -129,9 +134,9 @@ def solve_linear(
     def u_fn(x):
         """Evaluate solution at points x."""
         if isinstance(x, (list, tuple)):
-            x = torch.tensor(x, device=device, dtype=solver.beta.dtype)
+            x = torch.tensor(x, device=get_device(), dtype=solver.beta.dtype)
         elif not isinstance(x, torch.Tensor):
-            x = torch.tensor(x, device=device, dtype=solver.beta.dtype)
+            x = torch.tensor(x, device=get_device(), dtype=solver.beta.dtype)
         return solver.predict(x)
 
     result = {
@@ -281,9 +286,9 @@ def solve_nonlinear(
     def u_fn(x):
         """Evaluate solution at points x."""
         if isinstance(x, (list, tuple)):
-            x = torch.tensor(x, device=device, dtype=solver.beta.dtype)
+            x = torch.tensor(x, device=get_device(), dtype=solver.beta.dtype)
         elif not isinstance(x, torch.Tensor):
-            x = torch.tensor(x, device=device, dtype=solver.beta.dtype)
+            x = torch.tensor(x, device=get_device(), dtype=solver.beta.dtype)
         return solver.predict(x)
 
     result = {

@@ -49,7 +49,7 @@ import torch
 import numpy as np
 from typing import Optional, Sequence, Union
 
-from fastlsq.utils import device
+from fastlsq.device import get_device
 
 # Type for operator term coefficients: scalars or learnable tensors (nn.Parameter)
 CoeffT = Union[float, int, torch.Tensor]
@@ -147,8 +147,8 @@ class SinusoidalBasis:
         normalize: bool = True,
     ) -> SinusoidalBasis:
         """Create a basis with isotropic Gaussian weights."""
-        W = torch.randn(input_dim, n_features, device=device) * sigma
-        b = torch.rand(1, n_features, device=device) * 2 * np.pi
+        W = torch.randn(input_dim, n_features, device=get_device()) * sigma
+        b = torch.rand(1, n_features, device=get_device()) * 2 * np.pi
         return cls(W, b, normalize=normalize)
 
     @classmethod
@@ -160,10 +160,10 @@ class SinusoidalBasis:
         normalize: bool = True,
     ) -> SinusoidalBasis:
         """Create a basis with per-dimension bandwidths."""
-        W = torch.randn(input_dim, n_features, device=device)
-        s = torch.as_tensor(sigma, device=device, dtype=W.dtype).reshape(-1, 1)
+        W = torch.randn(input_dim, n_features, device=get_device())
+        s = torch.as_tensor(sigma, device=get_device(), dtype=W.dtype).reshape(-1, 1)
         W = W * s
-        b = torch.rand(1, n_features, device=device) * 2 * np.pi
+        b = torch.rand(1, n_features, device=get_device()) * 2 * np.pi
         return cls(W, b, normalize=normalize)
 
     # ------------------------------------------------------------------
@@ -367,7 +367,15 @@ class SinusoidalBasis:
                 for dim, order in alpha.items():
                     alpha_list[dim] = order
                 alpha = tuple(alpha_list)
-            result = result + coeff * self.derivative(x, alpha, cache=cache)
+            D = self.derivative(x, alpha, cache=cache)
+            if callable(coeff) and not isinstance(coeff, torch.Tensor):
+                # Variable-coefficient term c(x) * D^alpha phi.
+                c_vals = coeff(x)
+                if c_vals.dim() == 1:
+                    c_vals = c_vals.unsqueeze(-1)
+                result = result + c_vals * D
+            else:
+                result = result + coeff * D
         return result
 
 
@@ -404,11 +412,25 @@ class DiffOperator:
         return self + (-other)
 
     def __neg__(self) -> DiffOperator:
-        return DiffOperator([(-c, a) for c, a in self.terms])
+        new_terms = []
+        for c, a in self.terms:
+            if callable(c) and not isinstance(c, torch.Tensor):
+                fn = c
+                new_terms.append((lambda x, fn=fn: -fn(x), a))
+            else:
+                new_terms.append((-c, a))
+        return DiffOperator(new_terms)
 
     def __mul__(self, scalar: CoeffT) -> DiffOperator:
         """Scale operator by a scalar or learnable tensor (e.g. nn.Parameter)."""
-        return DiffOperator([(c * scalar, a) for c, a in self.terms])
+        new_terms = []
+        for c, a in self.terms:
+            if callable(c) and not isinstance(c, torch.Tensor):
+                fn = c
+                new_terms.append((lambda x, fn=fn, s=scalar: s * fn(x), a))
+            else:
+                new_terms.append((c * scalar, a))
+        return DiffOperator(new_terms)
 
     def __rmul__(self, scalar: CoeffT) -> DiffOperator:
         """Scale operator by a scalar or learnable tensor (e.g. nn.Parameter)."""
@@ -486,6 +508,19 @@ class DiffOperator:
         """∂/∂x_{dim}."""
         return cls.partial(dim, 1, d)
 
+    @classmethod
+    def field(cls, coeff_fn, alpha) -> DiffOperator:
+        """Variable-coefficient term c(x) · D^alpha.
+
+        Parameters
+        ----------
+        coeff_fn : callable
+            Maps ``x`` of shape ``(M, d)`` to a tensor of shape ``(M, 1)`` or ``(M,)``.
+        alpha : tuple of int
+            Multi-index of the derivative.
+        """
+        return cls([(coeff_fn, tuple(alpha))])
+
     # ------------------------------------------------------------------
     # Display
     # ------------------------------------------------------------------
@@ -497,6 +532,8 @@ class DiffOperator:
         for c, a in self.terms:
             if isinstance(c, torch.Tensor):
                 c_str = f"{c.item():g}" if c.numel() == 1 else "tensor(...)"
+            elif callable(c):
+                c_str = "c(x)"
             else:
                 c_str = f"{c:g}"
             if all(ak == 0 for ak in a):

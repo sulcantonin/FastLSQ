@@ -9,8 +9,14 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Device configuration
 # ---------------------------------------------------------------------------
+# Device selection lives in fastlsq.device (CPU/CUDA/Apple-MPS, dtype-aware).
+# Internal code calls fastlsq.device.get_device() so it respects runtime
+# set_device(); ``device`` below is kept as a back-compat import-time snapshot.
+from fastlsq.device import (  # noqa: E402,F401
+    resolve_device, get_device, set_device, device_info,
+)
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = get_device()
 
 
 def setup(dtype=torch.float64, seed=42):

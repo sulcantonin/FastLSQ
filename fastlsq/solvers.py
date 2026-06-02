@@ -14,7 +14,7 @@ PIELMSolver    -- Physics-Informed Extreme Learning Machine with tanh
 import torch
 import numpy as np
 
-from fastlsq.utils import device
+from fastlsq.device import get_device
 from fastlsq.basis import SinusoidalBasis, FeatureBasis
 
 
@@ -44,15 +44,15 @@ class FastLSQSolver:
 
     def add_block(self, hidden_size=500, scale=1.0):
         """Append a block of random Fourier features."""
-        W = torch.randn(self.input_dim, hidden_size, device=device)
+        W = torch.randn(self.input_dim, hidden_size, device=get_device())
 
         if isinstance(scale, (list, np.ndarray)):
-            s = torch.tensor(scale, device=device, dtype=W.dtype).unsqueeze(1)
+            s = torch.tensor(scale, device=get_device(), dtype=W.dtype).unsqueeze(1)
             W = W * s
         else:
             W = W * scale
 
-        b = torch.rand(1, hidden_size, device=device) * 2 * np.pi
+        b = torch.rand(1, hidden_size, device=get_device()) * 2 * np.pi
         self.W_list.append(W)
         self.b_list.append(b)
         self._n_features += hidden_size
@@ -111,17 +111,17 @@ class PIELMSolver:
         self._basis: FeatureBasis | None = None
 
     def add_block(self, hidden_size=500, scale=1.0):
-        W_base = torch.rand(self.input_dim, hidden_size, device=device) * 2 - 1
+        W_base = torch.rand(self.input_dim, hidden_size, device=get_device()) * 2 - 1
 
         if isinstance(scale, (list, np.ndarray)):
-            s = torch.tensor(scale, device=device, dtype=W_base.dtype).unsqueeze(1)
+            s = torch.tensor(scale, device=get_device(), dtype=W_base.dtype).unsqueeze(1)
             W = W_base * s
             b_scale = max(scale)
         else:
             W = W_base * scale
             b_scale = scale
 
-        b = (torch.rand(1, hidden_size, device=device) * 2 - 1) * b_scale
+        b = (torch.rand(1, hidden_size, device=get_device()) * 2 - 1) * b_scale
         self.W_list.append(W)
         self.b_list.append(b)
         self._n_features += hidden_size

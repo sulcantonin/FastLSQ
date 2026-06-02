@@ -15,7 +15,7 @@ import numpy as np
 
 from fastlsq.solvers import FastLSQSolver
 from fastlsq.linalg import solve_lstsq
-from fastlsq.utils import device
+from fastlsq.device import get_device
 
 
 # ======================================================================
@@ -27,7 +27,7 @@ def build_solver_with_scale(input_dim, scale, n_blocks=3, hidden=500):
     solver = FastLSQSolver(input_dim, normalize=True)
     for _ in range(n_blocks):
         solver.add_block(hidden_size=hidden, scale=scale)
-    solver.beta = torch.zeros(solver.n_features, 1, device=device)
+    solver.beta = torch.zeros(solver.n_features, 1, device=get_device())
     return solver
 
 

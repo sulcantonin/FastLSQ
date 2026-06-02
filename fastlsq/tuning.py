@@ -10,7 +10,8 @@ from typing import Optional, Callable
 from fastlsq.solvers import FastLSQSolver
 from fastlsq.linalg import solve_lstsq
 from fastlsq.newton import build_solver_with_scale, get_initial_guess, newton_solve
-from fastlsq.utils import device, evaluate_error
+from fastlsq.utils import evaluate_error
+from fastlsq.device import get_device
 
 
 def auto_select_scale(
@@ -68,7 +69,7 @@ def auto_select_scale(
                     solver = solver_class(problem.dim)
                     for _ in range(n_blocks):
                         solver.add_block(hidden_size=hidden_size, scale=scale)
-                    solver.beta = torch.zeros(solver.n_features, 1, device=device)
+                    solver.beta = torch.zeros(solver.n_features, 1, device=get_device())
 
                     x_pde, bcs, f_pde = problem.get_train_data(n_pde=n_pde, n_bc=n_bc)
                     get_initial_guess(solver, problem, x_pde, bcs, f_pde, mu=1e-10)

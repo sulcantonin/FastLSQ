@@ -7,7 +7,7 @@ import torch
 import numpy as np
 from typing import Optional, Callable, Tuple, Union
 
-from fastlsq.utils import device
+from fastlsq.device import get_device
 
 
 # ======================================================================
@@ -19,7 +19,7 @@ def sample_box(
     dim: int,
     *,
     bounds: Optional[Tuple[float, float]] = None,
-    device=device,
+    device=None,
 ) -> torch.Tensor:
     """Sample uniformly from a hypercube [a, b]^dim.
 
@@ -40,7 +40,7 @@ def sample_box(
     if bounds is None:
         bounds = (0.0, 1.0)
     a, b = bounds
-    return torch.rand(n, dim, device=device) * (b - a) + a
+    return torch.rand(n, dim, device=device or get_device()) * (b - a) + a
 
 
 def sample_ball(
@@ -49,7 +49,7 @@ def sample_ball(
     *,
     radius: float = 1.0,
     center: Optional[torch.Tensor] = None,
-    device=device,
+    device=None,
 ) -> torch.Tensor:
     """Sample uniformly from a ball (uniform in volume, not on surface).
 
@@ -70,9 +70,9 @@ def sample_ball(
     x : Tensor, shape (n, dim)
     """
     # Sample from unit ball: uniform direction, then scale by r^(1/dim)
-    x = torch.randn(n, dim, device=device)
+    x = torch.randn(n, dim, device=device or get_device())
     x = x / torch.norm(x, dim=1, keepdim=True)
-    r = torch.rand(n, 1, device=device) ** (1.0 / dim)
+    r = torch.rand(n, 1, device=device or get_device()) ** (1.0 / dim)
     x = x * r * radius
 
     if center is not None:
@@ -86,7 +86,7 @@ def sample_sphere(
     *,
     radius: float = 1.0,
     center: Optional[torch.Tensor] = None,
-    device=device,
+    device=None,
 ) -> torch.Tensor:
     """Sample uniformly from a sphere surface.
 
@@ -106,7 +106,7 @@ def sample_sphere(
     -------
     x : Tensor, shape (n, dim)
     """
-    x = torch.randn(n, dim, device=device)
+    x = torch.randn(n, dim, device=device or get_device())
     x = x / torch.norm(x, dim=1, keepdim=True) * radius
 
     if center is not None:
@@ -119,7 +119,7 @@ def sample_interval(
     *,
     a: float = 0.0,
     b: float = 1.0,
-    device=device,
+    device=None,
 ) -> torch.Tensor:
     """Sample uniformly from an interval [a, b].
 
@@ -135,7 +135,7 @@ def sample_interval(
     -------
     x : Tensor, shape (n, 1)
     """
-    return torch.rand(n, 1, device=device) * (b - a) + a
+    return torch.rand(n, 1, device=device or get_device()) * (b - a) + a
 
 
 def sample_boundary_box(
@@ -143,7 +143,7 @@ def sample_boundary_box(
     dim: int,
     *,
     bounds: Optional[Tuple[float, float]] = None,
-    device=device,
+    device=None,
 ) -> torch.Tensor:
     """Sample uniformly from the boundary of a hypercube.
 
@@ -170,23 +170,23 @@ def sample_boundary_box(
 
     for d in range(dim):
         # Face at x_d = a
-        x = torch.rand(n_per_face, dim, device=device) * (b - a) + a
+        x = torch.rand(n_per_face, dim, device=device or get_device()) * (b - a) + a
         x[:, d] = a
         points.append(x)
 
         # Face at x_d = b
-        x = torch.rand(n_per_face, dim, device=device) * (b - a) + a
+        x = torch.rand(n_per_face, dim, device=device or get_device()) * (b - a) + a
         x[:, d] = b
         points.append(x)
 
     # Fill remainder randomly
     remainder = n - len(points) * n_per_face
     if remainder > 0:
-        x = torch.rand(remainder, dim, device=device) * (b - a) + a
-        face_idx = torch.randint(0, 2 * dim, (remainder,), device=device)
+        x = torch.rand(remainder, dim, device=device or get_device()) * (b - a) + a
+        face_idx = torch.randint(0, 2 * dim, (remainder,), device=device or get_device())
         dim_idx = face_idx // 2
         val = (face_idx % 2) * (b - a) + a
-        x[torch.arange(remainder, device=device), dim_idx] = val
+        x[torch.arange(remainder, device=device or get_device()), dim_idx] = val
         points.append(x)
 
     return torch.cat(points, dim=0)

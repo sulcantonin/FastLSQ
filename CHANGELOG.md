@@ -2,6 +2,92 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [0.2.1] - 2026-06-02
+
+### Added
+
+- `LearnableFastLSQ.fit(problem, n_steps=, lr=, ...)` -- chainable high-level
+  bandwidth/covariance learning: `LearnableFastLSQ(d, N, mode="cholesky").fit(problem).predict(x)`.
+
+### Changed
+
+- `solve_linear` is one-shot again: the bandwidth-learning hyper-parameters
+  (`learn_sigma`/`learn_steps`/`learn_lr`) were removed from its signature -- an
+  iterative training loop does not belong on a one-shot solve. Learn the
+  anisotropic covariance via `LearnableFastLSQ(...).fit(problem)` or
+  `train_bandwidth`, where the training knobs live.
+- Packaging: `requires-python` lowered to `>=3.9` (the library runs on 3.9; added
+  the 3.9 classifier); description updated.
+
+## [0.2.0] - 2026-06-02
+
+### Added
+
+- **Device abstraction** (`fastlsq/device.py`): `resolve_device`, `set_device`,
+  `get_device`, `device_info` for CPU / CUDA / Apple-MPS. dtype-aware -- MPS is
+  auto-selected only for float32 (it has no float64), so the default float64
+  high-accuracy regime stays on CPU/CUDA. Override with `set_device(...)` or the
+  `FASTLSQ_DEVICE` environment variable; internal tensor creation respects the
+  active device at call time.
+- **Pluggable linear solver** `solve_lstsq(..., method=...)`:
+  - `"svd"` -- rank-revealing truncated SVD (LAPACK `gelsd` fast path on CPU);
+  - `"cholesky"` -- fast normal-equations solve for well-conditioned systems;
+  - `"rsvd"` -- torch-native randomized SVD (`O(MNk)`) for strongly low-rank `A`;
+  - `"auto"` (default) -- Cholesky with a cheap conditioning probe, falling back
+    to SVD when ill-conditioned (recovers the fast path without losing accuracy).
+  MPS factorizations run on CPU (no robust `svd`/`lstsq` there) and move back.
+- **Working anisotropic Sigma = L Lᵀ learner**: `LearnableFastLSQ` (diagonal &
+  cholesky modes) now converges -- `solve_inner` uses a differentiable
+  *rank-revealing* solve, the Cholesky factor is log-parameterized (clamped,
+  positive-definite), and `train_bandwidth` is robust (gradient clipping,
+  best-iterate restore, graceful SVD/gradient-failure handling). Train via
+  `train_bandwidth` or the chainable `LearnableFastLSQ.fit(problem, ...)`.
+
+### Changed
+
+- `solve_lstsq` defaults to the rank-revealing / `auto` solve instead of forming
+  the normal equations -- several orders of magnitude more accurate on the
+  rank-deficient random-feature systems (at a higher, still one-shot, cost).
+
+### Fixed
+
+- The previously dead `LearnableFastLSQ(mode="cholesky")` path, which diverged
+  because of an unstable inner `torch.linalg.lstsq` and an unconstrained `L`.
+
+## [0.1.5] - 2026-05-25
+
+### Added
+
+- **Vector-valued features**: new `VectorBasis` and `VectorFastLSQSolver`
+  (`fastlsq/vector.py`) for solving coupled systems where the unknown is a
+  vector field `u(x) = (u_1, ..., u_K)`.  Use cases include
+  streamfunction-vorticity NS `(psi, omega)`, incompressible NS primitive
+  variables `(u, v, p)`, multi-species transport, MHD, etc.
+
+  - `VectorBasis.random(input_dim, n_features, sigma, n_components, sigmas=...)`
+    creates K independent random-Fourier `SinusoidalBasis`es; per-component
+    bandwidth can be tuned via `sigmas`.
+  - Stacked evaluators: `evaluate(x) -> (M, K, N)`, `gradient -> (M, K, d, N)`,
+    `laplacian`, `hessian_diag`, `derivative(alpha)`.
+  - Block-diagonal assembly helpers (`block_diag_evaluate`,
+    `block_diag_laplacian`, `block_diag_derivative`) for systems whose
+    rows are independent per component.
+  - Coefficient packing utilities (`stack_betas`, `unstack_beta`,
+    `predict`) accept per-component lists, stacked columns, or
+    `(N, K)` matrices interchangeably.
+  - `VectorFastLSQSolver(input_dim, n_components, normalize=True)` is the
+    multi-component counterpart of `FastLSQSolver`; `add_block(scale=...)`
+    accepts either a scalar or a list of K scalars for per-component
+    bandwidth.
+  - `component(k)` / `component_solver(k)` give direct access to the k-th
+    scalar basis / solver for ad-hoc per-component work.
+
+### Other
+
+- Synchronised `pyproject.toml`, `fastlsq.__version__`, and CHANGELOG (the
+  package source had drifted to `__version__ = "0.1.0"` against
+  `pyproject.toml = "0.1.4"`; both now read `"0.1.5"`).
+
 ## [Unreleased]
 
 ### Added
