@@ -3,3 +3,4 @@ numpy>=1.24
 matplotlib>=3.7
 pytest>=7.0
 pandas>=2.0
+openpyxl>=3.0  # for NASA PHM 2019 .xlsx Description files

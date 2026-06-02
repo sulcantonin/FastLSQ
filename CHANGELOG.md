@@ -6,23 +6,6 @@ All notable changes to FastLSQ will be documented in this file.
 
 ### Added
 
-- `LearnableFastLSQ.fit(problem, n_steps=, lr=, ...)` -- chainable high-level
-  bandwidth/covariance learning: `LearnableFastLSQ(d, N, mode="cholesky").fit(problem).predict(x)`.
-
-### Changed
-
-- `solve_linear` is one-shot again: the bandwidth-learning hyper-parameters
-  (`learn_sigma`/`learn_steps`/`learn_lr`) were removed from its signature -- an
-  iterative training loop does not belong on a one-shot solve. Learn the
-  anisotropic covariance via `LearnableFastLSQ(...).fit(problem)` or
-  `train_bandwidth`, where the training knobs live.
-- Packaging: `requires-python` lowered to `>=3.9` (the library runs on 3.9; added
-  the 3.9 classifier); description updated.
-
-## [0.2.0] - 2026-06-02
-
-### Added
-
 - **Device abstraction** (`fastlsq/device.py`): `resolve_device`, `set_device`,
   `get_device`, `device_info` for CPU / CUDA / Apple-MPS. dtype-aware -- MPS is
   auto-selected only for float32 (it has no float64), so the default float64
@@ -40,19 +23,35 @@ All notable changes to FastLSQ will be documented in this file.
   cholesky modes) now converges -- `solve_inner` uses a differentiable
   *rank-revealing* solve, the Cholesky factor is log-parameterized (clamped,
   positive-definite), and `train_bandwidth` is robust (gradient clipping,
-  best-iterate restore, graceful SVD/gradient-failure handling). Train via
-  `train_bandwidth` or the chainable `LearnableFastLSQ.fit(problem, ...)`.
+  best-iterate restore, graceful SVD/gradient-failure handling). Chainable
+  `LearnableFastLSQ.fit(problem, ...)` for one-line learn-then-predict.
+- **Vector-valued solutions (`u: ℝᵈ → ℝᵏ`)**: first-class support for coupled and
+  decoupled multi-output PDEs via the new `fastlsq.block` module. Problems opt in
+  with `self.n_outputs = k`; `solver.beta` is `(N, k)` and `solver.predict(x)`
+  returns `(M, k)` (scalar `k=1` is bit-for-bit unchanged). `block_concat`
+  assembles a nested list of blocks (`None` = zero block); `pack_beta` /
+  `unpack_beta` convert between `(N, k)` and the block-stacked `(N*k, 1)` solve.
+  The block-stacked LSQ is solved by the rank-revealing solver, and the
+  Σ-learner computes its loss on the flat `_beta_flat` so it stays correct for
+  `k>1`.
+- **Learnable operator coefficients**: `Op` accepts `nn.Parameter` (and tensors)
+  as coefficients, e.g. `Op.laplacian(d=2) + k**2 * Op.identity(d=2)` with
+  `k = nn.Parameter(...)`; gradients flow through the prebuilt linear solve.
 
 ### Changed
 
 - `solve_lstsq` defaults to the rank-revealing / `auto` solve instead of forming
   the normal equations -- several orders of magnitude more accurate on the
   rank-deficient random-feature systems (at a higher, still one-shot, cost).
+- `solve_linear` is one-shot: the bandwidth-learning hyper-parameters live on
+  `LearnableFastLSQ.fit()` / `train_bandwidth`, not the solve signature.
+- Packaging: `requires-python` lowered to `>=3.9` (+3.9 classifier); description
+  updated.
 
 ### Fixed
 
 - The previously dead `LearnableFastLSQ(mode="cholesky")` path, which diverged
-  because of an unstable inner `torch.linalg.lstsq` and an unconstrained `L`.
+  from an unstable inner `torch.linalg.lstsq` and an unconstrained `L`.
 
 ## [0.1.5] - 2026-05-25
 
@@ -87,12 +86,6 @@ All notable changes to FastLSQ will be documented in this file.
 - Synchronised `pyproject.toml`, `fastlsq.__version__`, and CHANGELOG (the
   package source had drifted to `__version__ = "0.1.0"` against
   `pyproject.toml = "0.1.4"`; both now read `"0.1.5"`).
-
-## [Unreleased]
-
-### Added
-
-- **Learnable operator coefficients**: `Op` now accepts `nn.Parameter` (and tensors) as coefficients in scalar multiplication. Use `k = nn.Parameter(...)` with `Op.laplacian(d=2) + k**2 * Op.identity(d=2)` and optimise via AdamW; gradients flow through the prebuilt linear solve. See `examples/learnable_helmholtz.py`.
 
 ## [0.2.0] - 2026-03-01
 

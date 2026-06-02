@@ -72,21 +72,43 @@ class FastLSQSolver:
         return self._basis
 
     def predict(self, x):
-        """Evaluate u_N(x)."""
+        """Evaluate u_N(x).
+
+        Returns shape ``(M, k)`` where ``k`` is the number of output
+        components stored in ``self.beta`` (``k=1`` for scalar problems).
+        """
         return self.basis.evaluate(x) @ self.beta
 
     def predict_with_grad(self, x):
-        """Evaluate u_N(x) and its gradient."""
+        """Evaluate u_N(x) and its gradient.
+
+        Returns
+        -------
+        u : Tensor ``(M, k)``
+        grad_u : Tensor ``(M, d)`` if ``k == 1`` else ``(M, d, k)``
+        """
         cache = self.basis.cache(x)
         u = self.basis.evaluate(x, cache=cache) @ self.beta
-        grad_u = torch.einsum("idh,ho->id", self.basis.gradient(x, cache=cache), self.beta)
+        grad_u = torch.einsum(
+            "idh,hk->idk", self.basis.gradient(x, cache=cache), self.beta
+        )
+        if grad_u.shape[-1] == 1:
+            grad_u = grad_u.squeeze(-1)
         return u, grad_u
 
     def predict_with_laplacian(self, x):
-        """Evaluate u_N(x), gradient, and Laplacian."""
+        """Evaluate u_N(x), gradient, and Laplacian.
+
+        Same shape conventions as ``predict_with_grad``; the Laplacian has
+        shape ``(M, k)``.
+        """
         cache = self.basis.cache(x)
         u = self.basis.evaluate(x, cache=cache) @ self.beta
-        grad_u = torch.einsum("idh,ho->id", self.basis.gradient(x, cache=cache), self.beta)
+        grad_u = torch.einsum(
+            "idh,hk->idk", self.basis.gradient(x, cache=cache), self.beta
+        )
+        if grad_u.shape[-1] == 1:
+            grad_u = grad_u.squeeze(-1)
         lap_u = self.basis.laplacian(x, cache=cache) @ self.beta
         return u, grad_u, lap_u
 
@@ -160,5 +182,9 @@ class PIELMSolver:
     def predict_with_grad(self, x):
         cache = self.basis.cache(x)
         u = self.basis.evaluate(x, cache=cache) @ self.beta
-        grad_u = torch.einsum("idh,ho->id", self.basis.gradient(x, cache=cache), self.beta)
+        grad_u = torch.einsum(
+            "idh,hk->idk", self.basis.gradient(x, cache=cache), self.beta
+        )
+        if grad_u.shape[-1] == 1:
+            grad_u = grad_u.squeeze(-1)
         return u, grad_u

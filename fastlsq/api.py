@@ -15,6 +15,7 @@ from typing import Optional, Dict, Any, Callable, Tuple
 
 from fastlsq.solvers import FastLSQSolver
 from fastlsq.linalg import solve_lstsq
+from fastlsq.block import unpack_beta
 from fastlsq.newton import (
     build_solver_with_scale, get_initial_guess,
     newton_solve, continuation_solve,
@@ -126,7 +127,9 @@ def solve_linear(
 
     # Assemble and solve
     A, b = problem.build(solver, x_pde, *build_args)
-    solver.beta = solve_lstsq(A, b, mu=mu)
+    beta_raw = solve_lstsq(A, b, mu=mu)
+    n_outputs = getattr(problem, "n_outputs", 1)
+    solver.beta = unpack_beta(beta_raw, solver.n_features, n_outputs)
 
     runtime = time.time() - t0
 
@@ -250,7 +253,10 @@ def solve_nonlinear(
             print(f"Selected scale: {scale:.3f}")
 
     # Build solver
-    solver = build_solver_with_scale(problem.dim, scale, n_blocks, hidden_size)
+    n_outputs = getattr(problem, "n_outputs", 1)
+    solver = build_solver_with_scale(
+        problem.dim, scale, n_blocks, hidden_size, n_outputs=n_outputs
+    )
 
     # Get training data
     x_pde, bcs, f_pde = problem.get_train_data(n_pde=n_pde, n_bc=n_bc)

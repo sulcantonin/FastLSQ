@@ -38,6 +38,7 @@ from typing import Optional
 
 from fastlsq.device import get_device
 from fastlsq.basis import SinusoidalBasis
+from fastlsq.block import unpack_beta
 
 
 class LearnableFastLSQ(nn.Module):
@@ -66,10 +67,12 @@ class LearnableFastLSQ(nn.Module):
         mode: str = "scalar",
         init_scale: float = 1.0,
         normalize: bool = True,
+        n_outputs: int = 1,
     ):
         super().__init__()
         self.input_dim = input_dim
         self.n_features = n_features
+        self.n_outputs = n_outputs
         self.mode = mode
         self._normalize = normalize
 
@@ -100,6 +103,10 @@ class LearnableFastLSQ(nn.Module):
             raise ValueError(f"Unknown mode {mode!r}")
 
         self.beta: Optional[torch.Tensor] = None
+        # Flat (Nk, 1) coefficient vector kept alongside the (N, k) shaped
+        # `self.beta` so that block-structured residual losses
+        # ``A @ beta_flat - b`` work without re-packing.
+        self._beta_flat: Optional[torch.Tensor] = None
         self._cached_pinv: Optional[torch.Tensor] = None
 
     # ------------------------------------------------------------------
@@ -160,7 +167,9 @@ class LearnableFastLSQ(nn.Module):
         H = b.evaluate(x, cache=cache)
         dH = b.gradient(x, cache=cache)
         u = H @ self.beta
-        grad_u = torch.einsum("idh,ho->id", dH, self.beta)
+        grad_u = torch.einsum("idh,hk->idk", dH, self.beta)
+        if grad_u.shape[-1] == 1:
+            grad_u = grad_u.squeeze(-1)
         return u, grad_u
 
     # ------------------------------------------------------------------
@@ -172,14 +181,23 @@ class LearnableFastLSQ(nn.Module):
         """Differentiable rank-revealing inner solve.
 
         Solves ``beta* = argmin ||A beta - b||^2 + mu ||beta||^2`` through a
-        truncated SVD of ``A``, so gradients still flow back to ``L`` *and* the
-        solve is stable when ``A`` is rank-deficient.  (The plain
+        rank-revealing truncated SVD of ``A``, so gradients still flow back to
+        ``L`` *and* the solve is stable when ``A`` is rank-deficient.  (The plain
         ``torch.linalg.lstsq`` used previously amplifies the near-null space and
-        makes the outer AdamW loop diverge -- see the Sigma-learning notes.)
+        makes the outer AdamW loop diverge.)
+
+        For ``n_outputs > 1`` the system is block-stacked: the flat solution is
+        kept as ``self._beta_flat`` (shape-compatible with ``A``) for residual
+        losses, while ``self.beta`` is reshaped to ``(N, k)`` for prediction.
         """
         U, S, Vh = torch.linalg.svd(A, full_matrices=False)
         filt = torch.where(S > rcond * S[0], S / (S * S + mu), torch.zeros_like(S))
-        self.beta = Vh.transpose(-2, -1) @ (filt.unsqueeze(-1) * (U.transpose(-2, -1) @ b))
+        beta_flat = Vh.transpose(-2, -1) @ (filt.unsqueeze(-1) * (U.transpose(-2, -1) @ b))
+        self._beta_flat = beta_flat
+        if self.n_outputs > 1:
+            self.beta = unpack_beta(beta_flat, self.n_features, self.n_outputs)
+        else:
+            self.beta = beta_flat
         return self.beta
 
     # ------------------------------------------------------------------
@@ -277,8 +295,9 @@ def train_bandwidth(
             if verbose:
                 print(f"  Step {step:4d}: inner SVD failed -- stopping.")
             break
-
-        loss = torch.mean((A @ learnable.beta - b_rhs) ** 2)
+        # _beta_flat is block-stacked and shape-compatible with A (for n_outputs>1);
+        # learnable.beta may be reshaped to (N, k), so the loss uses _beta_flat.
+        loss = torch.mean((A @ learnable._beta_flat - b_rhs) ** 2)
         if not torch.isfinite(loss):
             if verbose:
                 print(f"  Step {step:4d}: non-finite loss -- stopping.")

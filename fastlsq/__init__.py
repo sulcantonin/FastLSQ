@@ -15,6 +15,7 @@ from fastlsq.basis import SinusoidalBasis, BasisCache, DiffOperator, Op, Feature
 from fastlsq.solvers import FastLSQSolver, PIELMSolver
 from fastlsq.vector  import VectorBasis, VectorFastLSQSolver
 from fastlsq.linalg import solve_lstsq
+from fastlsq.block import block_concat, pack_beta, unpack_beta
 from fastlsq.api import solve_linear, solve_nonlinear
 from fastlsq.tuning import auto_select_scale
 from fastlsq.learnable import LearnableFastLSQ, train_bandwidth
@@ -63,6 +64,10 @@ __all__ = [
     "FastLSQSolver",
     "PIELMSolver",
     "solve_lstsq",
+    # Block assembly for vector-valued u
+    "block_concat",
+    "pack_beta",
+    "unpack_beta",
     # Learnable bandwidth
     "LearnableFastLSQ",
     "train_bandwidth",
