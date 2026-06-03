@@ -164,7 +164,10 @@ def load_checkpoint(
     solver : FastLSQSolver
     metadata : dict, optional
     """
-    state = torch.load(path, map_location=device)
+    # weights_only=False: save_checkpoint writes NumPy arrays (see to_dict),
+    # which torch>=2.6's default weights_only=True refuses to unpickle. The
+    # file is produced by this library, so it is trusted.
+    state = torch.load(path, map_location=device, weights_only=False)
     metadata = state.pop("metadata", None)
     solver = from_dict(state, device=device)
     return solver, metadata

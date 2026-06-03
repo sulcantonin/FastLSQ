@@ -17,7 +17,7 @@ Each class provides:
 import torch
 import numpy as np
 
-from fastlsq.utils import device
+from fastlsq.device import get_device
 
 
 # ======================================================================
@@ -27,9 +27,9 @@ from fastlsq.utils import device
 def _unit_square_boundary(n_bc):
     """Generate n_bc random points on the boundary of [0,1]^2."""
     n_side = n_bc // 4
-    r = lambda n: torch.rand(n, 1, device=device)
-    z = lambda n: torch.zeros(n, 1, device=device)
-    o = lambda n: torch.ones(n, 1, device=device)
+    r = lambda n: torch.rand(n, 1, device=get_device())
+    z = lambda n: torch.zeros(n, 1, device=get_device())
+    o = lambda n: torch.ones(n, 1, device=get_device())
     return torch.cat([
         torch.cat([z(n_side), r(n_side)], 1),
         torch.cat([o(n_side), r(n_side)], 1),
@@ -68,7 +68,7 @@ class NLPoisson2D:
         return 2 * np.pi ** 2 * u + u ** 3
 
     def get_train_data(self, n_pde=5000, n_bc=1000):
-        x_pde = torch.rand(n_pde, 2, device=device)
+        x_pde = torch.rand(n_pde, 2, device=get_device())
         f_pde = self.source(x_pde)
         x_bc = _unit_square_boundary(n_bc)
         u_bc = self.exact(x_bc)
@@ -102,7 +102,7 @@ class NLPoisson2D:
         return torch.cat(rows_A, 0), torch.cat(rows_b, 0)
 
     def get_test_points(self, n=5000):
-        return torch.rand(n, 2, device=device)
+        return torch.rand(n, 2, device=get_device())
 
 
 # ======================================================================
@@ -136,7 +136,7 @@ class Bratu2D:
         return 2 * np.pi ** 2 * u - self.lam * torch.exp(u)
 
     def get_train_data(self, n_pde=5000, n_bc=1000):
-        x_pde = torch.rand(n_pde, 2, device=device)
+        x_pde = torch.rand(n_pde, 2, device=get_device())
         f_pde = self.source(x_pde)
         x_bc = _unit_square_boundary(n_bc)
         u_bc = self.exact(x_bc)
@@ -171,7 +171,7 @@ class Bratu2D:
         return torch.cat(rows_A, 0), torch.cat(rows_b, 0)
 
     def get_test_points(self, n=5000):
-        return torch.rand(n, 2, device=device)
+        return torch.rand(n, 2, device=get_device())
 
 
 # ======================================================================
@@ -207,13 +207,13 @@ class SteadyBurgers1D:
         return u * ux - self.nu * uxx
 
     def get_train_data(self, n_pde=3000, n_bc=200):
-        x_pde = torch.rand(n_pde, 1, device=device)
+        x_pde = torch.rand(n_pde, 1, device=get_device())
         f_pde = self.source(x_pde)
         x_bc = torch.cat([
-            torch.zeros(n_bc // 2, 1, device=device),
-            torch.ones(n_bc // 2, 1, device=device),
+            torch.zeros(n_bc // 2, 1, device=get_device()),
+            torch.ones(n_bc // 2, 1, device=get_device()),
         ], 0)
-        u_bc = torch.zeros(n_bc, 1, device=device)
+        u_bc = torch.zeros(n_bc, 1, device=get_device())
         return x_pde, [(x_bc, u_bc)], f_pde
 
     def build_newton_step(self, solver, x_pde, bcs, f_pde):
@@ -249,7 +249,7 @@ class SteadyBurgers1D:
         return torch.cat(rows_A, 0), torch.cat(rows_b, 0)
 
     def get_test_points(self, n=5000):
-        return torch.rand(n, 1, device=device)
+        return torch.rand(n, 1, device=get_device())
 
 
 # ======================================================================
@@ -285,7 +285,7 @@ class NLHelmholtz2D:
         return -self.k ** 2 * u + self.alpha * u ** 3
 
     def get_train_data(self, n_pde=5000, n_bc=1000):
-        x_pde = torch.rand(n_pde, 2, device=device)
+        x_pde = torch.rand(n_pde, 2, device=get_device())
         f_pde = self.source(x_pde)
         x_bc = _unit_square_boundary(n_bc)
         u_bc = self.exact(x_bc)
@@ -321,7 +321,7 @@ class NLHelmholtz2D:
         return torch.cat(rows_A, 0), torch.cat(rows_b, 0)
 
     def get_test_points(self, n=5000):
-        return torch.rand(n, 2, device=device)
+        return torch.rand(n, 2, device=get_device())
 
 
 # ======================================================================
@@ -352,13 +352,13 @@ class AllenCahn1D:
         return self.eps * uxx + u - u ** 3
 
     def get_train_data(self, n_pde=3000, n_bc=200):
-        x_pde = torch.rand(n_pde, 1, device=device)
+        x_pde = torch.rand(n_pde, 1, device=get_device())
         f_pde = self.source(x_pde)
         x_bc = torch.cat([
-            torch.zeros(n_bc // 2, 1, device=device),
-            torch.ones(n_bc // 2, 1, device=device),
+            torch.zeros(n_bc // 2, 1, device=get_device()),
+            torch.ones(n_bc // 2, 1, device=get_device()),
         ], 0)
-        u_bc = torch.zeros(n_bc, 1, device=device)
+        u_bc = torch.zeros(n_bc, 1, device=get_device())
         return x_pde, [(x_bc, u_bc)], f_pde
 
     def build_newton_step(self, solver, x_pde, bcs, f_pde):
@@ -393,4 +393,4 @@ class AllenCahn1D:
         return torch.cat(rows_A, 0), torch.cat(rows_b, 0)
 
     def get_test_points(self, n=5000):
-        return torch.rand(n, 1, device=device)
+        return torch.rand(n, 1, device=get_device())

@@ -87,10 +87,13 @@ def newton_solve(solver, problem, x_pde, bcs, f_pde,
     history = []
     n_outputs = getattr(problem, "n_outputs", 1)
     N = solver.n_features
+    R0 = None
 
     for it in range(max_iter):
         J, neg_R = problem.build_newton_step(solver, x_pde, bcs, f_pde)
         res_norm = torch.norm(neg_R).item()
+        if R0 is None:
+            R0 = max(res_norm, 1e-30)
 
         delta_beta_raw = solve_lstsq(J, neg_R, mu=mu)
         delta_beta = unpack_beta(delta_beta_raw, N, n_outputs)
@@ -116,7 +119,10 @@ def newton_solve(solver, problem, x_pde, bcs, f_pde,
                 break
             alpha *= 0.5
         else:
-            solver.beta = beta_old + alpha * delta_beta
+            # No backtracked step satisfied the Armijo condition; reject the
+            # step and keep the previous iterate rather than committing a
+            # point that may be worse than where we started.
+            solver.beta = beta_old
 
         history.append({
             "iter": it, "residual": res_norm,
@@ -128,7 +134,7 @@ def newton_solve(solver, problem, x_pde, bcs, f_pde,
             print(f"  Newton {it:2d}: |R|={res_norm:.2e}  "
                   f"|du|/|u|={rel_du:.2e}  alpha={alpha:.3f}")
 
-        if res_norm < tol_res and rel_du < tol_du:
+        if res_norm < tol_res * R0 or rel_du < tol_du:
             if verbose:
                 print(f"  Converged in {it + 1} iterations "
                       f"(|R|={res_norm:.1e}, |du|/|u|={rel_du:.1e})")

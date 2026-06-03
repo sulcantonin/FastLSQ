@@ -180,19 +180,26 @@ class LearnableFastLSQ(nn.Module):
                     rcond: float = 1e-12):
         """Differentiable rank-revealing inner solve.
 
-        Solves ``beta* = argmin ||A beta - b||^2 + mu ||beta||^2`` through a
-        rank-revealing truncated SVD of ``A``, so gradients still flow back to
-        ``L`` *and* the solve is stable when ``A`` is rank-deficient.  (The plain
-        ``torch.linalg.lstsq`` used previously amplifies the near-null space and
-        makes the outer AdamW loop diverge.)
+        Solves ``beta* = argmin ||A beta - b||^2 + mu ||beta||^2`` through the
+        SVD-based ``gelsd`` least-squares driver with ``rcond`` truncation, so
+        gradients still flow back to ``L`` *and* the solve is stable when ``A``
+        is rank-deficient.  (The ``rcond`` cut suppresses the near-null space,
+        and ``gelsd``'s backward uses the stable pseudoinverse formula rather
+        than per-singular-vector derivatives -- which is what keeps the outer
+        AdamW loop's gradients finite.  A plain ``torch.linalg.lstsq`` *without*
+        ``rcond`` is what amplifies the null space.)
 
         For ``n_outputs > 1`` the system is block-stacked: the flat solution is
         kept as ``self._beta_flat`` (shape-compatible with ``A``) for residual
         losses, while ``self.beta`` is reshaped to ``(N, k)`` for prediction.
         """
-        U, S, Vh = torch.linalg.svd(A, full_matrices=False)
-        filt = torch.where(S > rcond * S[0], S / (S * S + mu), torch.zeros_like(S))
-        beta_flat = Vh.transpose(-2, -1) @ (filt.unsqueeze(-1) * (U.transpose(-2, -1) @ b))
+        if mu and mu > 0.0:
+            n = A.shape[-1]
+            A_aug = torch.cat([A, (mu ** 0.5) * torch.eye(n, dtype=A.dtype, device=A.device)], dim=0)
+            b_aug = torch.cat([b, torch.zeros(n, b.shape[-1], dtype=b.dtype, device=b.device)], dim=0)
+            beta_flat = torch.linalg.lstsq(A_aug, b_aug, rcond=rcond, driver="gelsd").solution
+        else:
+            beta_flat = torch.linalg.lstsq(A, b, rcond=rcond, driver="gelsd").solution
         self._beta_flat = beta_flat
         if self.n_outputs > 1:
             self.beta = unpack_beta(beta_flat, self.n_features, self.n_outputs)

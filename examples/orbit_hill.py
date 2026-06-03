@@ -31,7 +31,6 @@ import sys
 import time
 import numpy as np
 import torch
-from scipy.linalg import cho_factor, cho_solve
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from fastlsq.basis import SinusoidalBasis  # noqa: E402
@@ -166,10 +165,13 @@ def assemble(basis: SinusoidalBasis, pts_int: torch.Tensor):
 def solve(A, b):
     A64 = A.astype(np.float64, copy=False)
     b64 = b.astype(np.float64, copy=False)
-    AtA = A64.T @ A64 + MU_REG * np.eye(A64.shape[1])
-    Atb = A64.T @ b64
-    cho = cho_factor(AtA)
-    return cho_solve(cho, Atb)
+    # Rank-revealing least squares. Forming the normal equations A^T A (+ridge)
+    # and Cholesky-factoring them squares the condition number of this
+    # random-feature system, which made cho_factor fail ("not positive
+    # definite"); lstsq solves min ||A x - b|| directly via SVD and needs no
+    # positive-definiteness.
+    beta, *_ = np.linalg.lstsq(A64, b64, rcond=None)
+    return beta
 
 
 # ---------------------------------------------------------------------------

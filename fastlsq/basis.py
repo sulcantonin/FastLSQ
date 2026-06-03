@@ -172,6 +172,11 @@ class SinusoidalBasis:
 
     def cache(self, x: torch.Tensor) -> BasisCache:
         """Create a cache for the given collocation points."""
+        # Accept inputs in any dtype/device (e.g. float32 from user code) and
+        # promote to the basis's own dtype/device so ``x @ self.W`` never trips
+        # a float32-vs-float64 mismatch.
+        if x.dtype != self.W.dtype or x.device != self.W.device:
+            x = x.to(dtype=self.W.dtype, device=self.W.device)
         return BasisCache(x @ self.W + self.b)
 
     # ------------------------------------------------------------------

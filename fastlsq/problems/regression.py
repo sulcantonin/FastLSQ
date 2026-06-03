@@ -14,7 +14,7 @@ avoid code duplication.
 import torch
 import numpy as np
 
-from fastlsq.utils import device
+from fastlsq.device import get_device
 from fastlsq.problems.nonlinear import Bratu2D, NLHelmholtz2D
 
 
@@ -60,8 +60,8 @@ class Burgers1D_Regression:
         dz_dt = -0.5 / (4 * self.nu)
         return torch.cat([du_dz * dz_dx, du_dz * dz_dt], dim=1)
 
-    def get_train_data(self, n_samples=5000):
-        x_pde = torch.rand(n_samples, 2, device=device)
+    def get_train_data(self, n_pde=5000, n_bc=0):
+        x_pde = torch.rand(n_pde, 2, device=get_device())
         u_true = self.exact(x_pde)
         return x_pde, [(x_pde, u_true, "data_fit")]
 
@@ -69,7 +69,7 @@ class Burgers1D_Regression:
         return _regression_build(slv, x_pde, bcs)
 
     def get_test_points(self, n=10000):
-        return torch.rand(n, self.dim, device=device)
+        return torch.rand(n, self.dim, device=get_device())
 
 
 # ======================================================================
@@ -106,9 +106,9 @@ class KdV_Regression:
         k = sqrt_c / 2.0
         return torch.cat([du_dz * k, du_dz * (-k * self.c)], dim=1)
 
-    def get_train_data(self, n_samples=5000):
-        x_space = torch.rand(n_samples, 1, device=device) * 4 - 2
-        t_time = torch.rand(n_samples, 1, device=device) * 0.1
+    def get_train_data(self, n_pde=5000, n_bc=0):
+        x_space = torch.rand(n_pde, 1, device=get_device()) * 4 - 2
+        t_time = torch.rand(n_pde, 1, device=get_device()) * 0.1
         x_pde = torch.cat([x_space, t_time], dim=1)
         u_true = self.exact(x_pde)
         return x_pde, [(x_pde, u_true, "data_fit")]
@@ -117,8 +117,8 @@ class KdV_Regression:
         return _regression_build(slv, x_pde, bcs)
 
     def get_test_points(self, n=10000):
-        x_space = torch.rand(n, 1, device=device) * 4 - 2
-        t_time = torch.rand(n, 1, device=device) * 0.1
+        x_space = torch.rand(n, 1, device=get_device()) * 4 - 2
+        t_time = torch.rand(n, 1, device=get_device()) * 0.1
         return torch.cat([x_space, t_time], dim=1)
 
 
@@ -153,9 +153,9 @@ class ReactionDiffusion_Regression:
         du_dz = -2.0 * ((1.0 + E).pow(-3)) * E
         return torch.cat([du_dz * alpha, du_dz * (-alpha * c)], dim=1)
 
-    def get_train_data(self, n_samples=5000):
-        x_space = torch.rand(n_samples, 1, device=device) * 20 - 10
-        t_time = torch.rand(n_samples, 1, device=device)
+    def get_train_data(self, n_pde=5000, n_bc=0):
+        x_space = torch.rand(n_pde, 1, device=get_device()) * 20 - 10
+        t_time = torch.rand(n_pde, 1, device=get_device())
         x_pde = torch.cat([x_space, t_time], dim=1)
         u_true = self.exact(x_pde)
         return x_pde, [(x_pde, u_true, "data_fit")]
@@ -164,8 +164,8 @@ class ReactionDiffusion_Regression:
         return _regression_build(slv, x_pde, bcs)
 
     def get_test_points(self, n=10000):
-        x_space = torch.rand(n, 1, device=device) * 20 - 10
-        t_time = torch.rand(n, 1, device=device)
+        x_space = torch.rand(n, 1, device=get_device()) * 20 - 10
+        t_time = torch.rand(n, 1, device=get_device())
         return torch.cat([x_space, t_time], dim=1)
 
 
@@ -205,9 +205,9 @@ class SineGordon_Regression:
         dA_dt = (1.0 / denom) * (k * w * cos_wt)
         return torch.cat([du_dA * dA_dx, du_dA * dA_dt], dim=1)
 
-    def get_train_data(self, n_samples=5000):
-        x_space = torch.rand(n_samples, 1, device=device) * 20 - 10
-        t_time = torch.rand(n_samples, 1, device=device) * 20
+    def get_train_data(self, n_pde=5000, n_bc=0):
+        x_space = torch.rand(n_pde, 1, device=get_device()) * 20 - 10
+        t_time = torch.rand(n_pde, 1, device=get_device()) * 20
         x_pde = torch.cat([x_space, t_time], dim=1)
         u_true = self.exact(x_pde)
         return x_pde, [(x_pde, u_true, "data_fit")]
@@ -216,8 +216,8 @@ class SineGordon_Regression:
         return _regression_build(slv, x_pde, bcs)
 
     def get_test_points(self, n=2000):
-        x_space = torch.rand(n, 1, device=device) * 20 - 10
-        t_time = torch.rand(n, 1, device=device) * 20
+        x_space = torch.rand(n, 1, device=get_device()) * 20 - 10
+        t_time = torch.rand(n, 1, device=get_device()) * 20
         return torch.cat([x_space, t_time], dim=1)
 
 
@@ -245,9 +245,9 @@ class KleinGordon_Regression:
         du_dt = -2 * np.pi * torch.sin(np.pi * xv) * torch.sin(2 * np.pi * tv)
         return torch.cat([du_dx, du_dt], dim=1)
 
-    def get_train_data(self, n_samples=5000):
-        x_space = torch.rand(n_samples, 1, device=device) * 2 - 1
-        t_time = torch.rand(n_samples, 1, device=device)
+    def get_train_data(self, n_pde=5000, n_bc=0):
+        x_space = torch.rand(n_pde, 1, device=get_device()) * 2 - 1
+        t_time = torch.rand(n_pde, 1, device=get_device())
         x_pde = torch.cat([x_space, t_time], dim=1)
         u_true = self.exact(x_pde)
         return x_pde, [(x_pde, u_true, "data_fit")]
@@ -256,8 +256,8 @@ class KleinGordon_Regression:
         return _regression_build(slv, x_pde, bcs)
 
     def get_test_points(self, n=2000):
-        x_space = torch.rand(n, 1, device=device) * 2 - 1
-        t_time = torch.rand(n, 1, device=device)
+        x_space = torch.rand(n, 1, device=get_device()) * 2 - 1
+        t_time = torch.rand(n, 1, device=get_device())
         return torch.cat([x_space, t_time], dim=1)
 
 
@@ -290,9 +290,9 @@ class NavierStokes2D_Kovasznay:
         du_dy = 2 * np.pi * exp_term * sin_term
         return torch.cat([du_dx, du_dy], dim=1)
 
-    def get_train_data(self, n_samples=5000):
-        x_space = torch.rand(n_samples, 1, device=device) * 1.5 - 0.5
-        y_space = torch.rand(n_samples, 1, device=device) * 2.0 - 0.5
+    def get_train_data(self, n_pde=5000, n_bc=0):
+        x_space = torch.rand(n_pde, 1, device=get_device()) * 1.5 - 0.5
+        y_space = torch.rand(n_pde, 1, device=get_device()) * 2.0 - 0.5
         x_pde = torch.cat([x_space, y_space], dim=1)
         u_true = self.exact(x_pde)
         return x_pde, [(x_pde, u_true, "data_fit")]
@@ -301,8 +301,8 @@ class NavierStokes2D_Kovasznay:
         return _regression_build(slv, x_pde, bcs)
 
     def get_test_points(self, n=2000):
-        x_space = torch.rand(n, 1, device=device) * 1.5 - 0.5
-        y_space = torch.rand(n, 1, device=device) * 2.0 - 0.5
+        x_space = torch.rand(n, 1, device=get_device()) * 1.5 - 0.5
+        y_space = torch.rand(n, 1, device=get_device()) * 2.0 - 0.5
         return torch.cat([x_space, y_space], dim=1)
 
 
@@ -332,8 +332,8 @@ class GrayScott_Pulse:
         darg_dt = 2 * self.c * (xv - self.c * tv) / self.sigma
         return torch.cat([u * darg_dx, u * darg_dt], dim=1)
 
-    def get_train_data(self, n_samples=5000):
-        x_pde = torch.rand(n_samples, 2, device=device)
+    def get_train_data(self, n_pde=5000, n_bc=0):
+        x_pde = torch.rand(n_pde, 2, device=get_device())
         u_true = self.exact(x_pde)
         return x_pde, [(x_pde, u_true, "data_fit")]
 
@@ -341,7 +341,7 @@ class GrayScott_Pulse:
         return _regression_build(slv, x_pde, bcs)
 
     def get_test_points(self, n=2000):
-        return torch.rand(n, 2, device=device)
+        return torch.rand(n, 2, device=get_device())
 
 
 # ======================================================================
@@ -358,8 +358,8 @@ class Bratu2D_Regression(Bratu2D):
         super().__init__(lam=1.0)
         self.name = "Bratu 2D (Reg)"
 
-    def get_train_data(self, n_samples=5000):
-        x_pde = torch.rand(n_samples, 2, device=device)
+    def get_train_data(self, n_pde=5000, n_bc=0):
+        x_pde = torch.rand(n_pde, 2, device=get_device())
         u_true = self.exact(x_pde)
         return x_pde, [(x_pde, u_true, "data_fit")]
 
@@ -367,7 +367,7 @@ class Bratu2D_Regression(Bratu2D):
         return _regression_build(slv, x_pde, bcs)
 
     def get_test_points(self, n=5000):
-        return torch.rand(n, 2, device=device)
+        return torch.rand(n, 2, device=get_device())
 
 
 # ======================================================================
@@ -385,8 +385,8 @@ class NLHelmholtz2D_Regression(NLHelmholtz2D):
         super().__init__(k=3.0, alpha=0.5)
         self.name = "NL-Helmholtz (Reg)"
 
-    def get_train_data(self, n_samples=5000):
-        x_pde = torch.rand(n_samples, 2, device=device)
+    def get_train_data(self, n_pde=5000, n_bc=0):
+        x_pde = torch.rand(n_pde, 2, device=get_device())
         u_true = self.exact(x_pde)
         return x_pde, [(x_pde, u_true, "data_fit")]
 
@@ -394,4 +394,4 @@ class NLHelmholtz2D_Regression(NLHelmholtz2D):
         return _regression_build(slv, x_pde, bcs)
 
     def get_test_points(self, n=5000):
-        return torch.rand(n, 2, device=device)
+        return torch.rand(n, 2, device=get_device())
