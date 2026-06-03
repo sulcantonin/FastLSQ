@@ -92,7 +92,7 @@ def _auto_solve(A, b, mu, rcond):
     try:
         x, L = _cholesky_solve(A, b, mu)
         d = torch.diagonal(L).abs()
-        if torch.isfinite(d).all() and d.min() > (rcond ** 0.5) * d.max():
+        if torch.isfinite(d).all() and d.min() > (rcond ** 0.25) * d.max():
             return x
     except torch.linalg.LinAlgError:
         pass

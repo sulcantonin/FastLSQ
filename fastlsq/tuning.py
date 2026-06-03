@@ -58,6 +58,7 @@ def auto_select_scale(
 
     best_scale = scales[0]
     best_error = float("inf")
+    last_exc = None
     n_outputs = getattr(problem, "n_outputs", 1)
 
     for scale in scales:
@@ -108,7 +109,8 @@ def auto_select_scale(
                 if np.isnan(val_err) or np.isinf(val_err):
                     val_err = 1e10
                 errors.append(val_err)
-            except Exception:
+            except Exception as e:
+                last_exc = e
                 errors.append(1e10)
 
         mean_error = np.mean(errors)
@@ -119,4 +121,10 @@ def auto_select_scale(
             best_error = mean_error
             best_scale = scale
 
+    if best_error >= 1e10:
+        msg = ("auto_select_scale: no scale produced a finite error; every "
+               "trial failed or diverged")
+        if last_exc is not None:
+            msg += f" (last exception: {last_exc!r})"
+        raise RuntimeError(msg)
     return best_scale

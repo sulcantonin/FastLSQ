@@ -356,11 +356,11 @@ class VectorFastLSQSolver:
     ):
         """Append a feature block to every component.
 
-        If `scale` is a list/tuple of length ``n_components``, each
+        If `scale` is a list/tuple/ndarray of length ``n_components``, each
         component is scaled independently.  Otherwise the same scale
         is shared.
         """
-        if isinstance(scale, (list, tuple)) and \
+        if isinstance(scale, (list, tuple, np.ndarray)) and \
            len(scale) == self._n_components and \
            not isinstance(scale[0], (list, tuple, np.ndarray)):
             scales = list(scale)

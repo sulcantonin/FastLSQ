@@ -174,8 +174,8 @@ def solve_nonlinear(
     n_bc: int = 1000,
     n_test: int = 5000,
     max_iter: int = 30,
-    tol_res: float = 1e-12,
-    tol_du: float = 1e-13,
+    tol_res: float = 1e-8,
+    tol_du: float = 1e-10,
     damping: float = 1.0,
     mu: float = 1e-10,
     auto_scale: bool = True,
@@ -264,9 +264,11 @@ def solve_nonlinear(
     # Check for continuation
     if getattr(problem, "use_continuation", False):
         schedule = list(problem.continuation_schedule)
-        if schedule[-1] != getattr(problem, "nu_target", None):
-            schedule.append(getattr(problem, "nu_target", None))
-        schedule = [v for v in schedule if v >= getattr(problem, "nu_target", 0.0)]
+        nu_target = getattr(problem, "nu_target", None)
+        if nu_target is not None:
+            if schedule[-1] != nu_target:
+                schedule.append(nu_target)
+            schedule = [v for v in schedule if v >= nu_target]
 
         history = continuation_solve(
             solver, problem, x_pde, bcs, f_pde,

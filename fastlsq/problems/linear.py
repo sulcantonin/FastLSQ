@@ -392,13 +392,13 @@ class ElasticWave2D:
         # t is normalised to [0,1]; physical d²/dt² = (1/t_max)² d²/dτ²
         t_scale = self.t_max ** 2
 
-        # PDE1: u_x_tt - c_p² u_x_xx - c_s² u_x_yy - (c_p² - c_s²) u_y_xy = 0
-        A1_x = t_scale * u_tt - self.c_p2 * u_xx - self.c_s2 * u_yy
-        A1_y = -self.c_cross * u_xy
+        # PDE1: u_x_ττ = t_max²·(c_p² u_x_xx + c_s² u_x_yy + (c_p²-c_s²) u_y_xy)
+        A1_x = u_tt - t_scale * (self.c_p2 * u_xx + self.c_s2 * u_yy)
+        A1_y = -t_scale * self.c_cross * u_xy
 
-        # PDE2: u_y_tt - c_p² u_y_yy - c_s² u_y_xx - (c_p² - c_s²) u_x_xy = 0
-        A2_x = -self.c_cross * u_xy
-        A2_y = t_scale * u_tt - self.c_p2 * u_yy - self.c_s2 * u_xx
+        # PDE2: u_y_ττ = t_max²·(c_p² u_y_yy + c_s² u_y_xx + (c_p²-c_s²) u_x_xy)
+        A2_x = -t_scale * self.c_cross * u_xy
+        A2_y = u_tt - t_scale * (self.c_p2 * u_yy + self.c_s2 * u_xx)
 
         A_pde = torch.cat([
             torch.cat([A1_x, A1_y], dim=1),
