@@ -2,6 +2,27 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [0.2.4] - 2026-06-04
+
+### Added
+
+- **Benchmark + inverse-problem test suite** (`tests/test_benchmarks_inverse.py`):
+  12 deterministic smoke tests (~11 s) that solve the linear (`PoissonND`,
+  `HeatND`, `Wave1D`, `Helmholtz2D`, `Maxwell2D_TM`) and nonlinear
+  (`NLPoisson2D`, `Bratu2D`, `SteadyBurgers1D`, `NLHelmholtz2D`, `AllenCahn1D`)
+  benchmark equations through the public `solve_linear` / `solve_nonlinear` API,
+  plus two inverse pipelines -- Gaussian source-position recovery (forward solve
+  + L-BFGS) and SINDy-style PDE discovery via analytical derivatives --
+  exercising the 0.2.3 QR / N-scaled-collocation solver path end to end.
+
+### Known issues
+
+- `Wave2D_MS` does not solve via `solve_linear` (relative error 1.0 in every
+  configuration tested), and `ElasticWave2D` -- a 2-output vector problem whose
+  `exact()` returns `(N, 2)` -- never sets `n_outputs`, so the scalar API cannot
+  unpack it. Both are pre-existing problem-definition gaps, independent of the
+  solver work, and are excluded from the new smoke test pending a fix.
+
 ## [0.2.3] - 2026-06-04
 
 ### Added
