@@ -15,8 +15,8 @@ condition number -- leaving several orders of magnitude of accuracy on the floor
                     augmentation).  Backward-stable at ``cond(A)`` -- SVD-grade
                     accuracy with no normal-equations squaring and no required
                     ridge, at ~QR cost (cheaper than SVD).  Assumes (numerically)
-                    full column rank; use ``"svd"`` for a rank-deficient ``A``
-                    (so ``"auto"`` keeps SVD, not QR, as its fallback).
+                    full column rank; ``"svd"`` is the rank-deficient-safe choice
+                    (and ``"auto"``'s ultimate fallback if QR blows up).
 * ``"svd"``      -- rank-revealing truncated SVD of ``A`` (LAPACK ``gelsd`` fast
                     path on CPU; explicit SVD elsewhere).  The accuracy reference;
                     use for a genuinely rank-deficient ``A``.
@@ -26,10 +26,11 @@ condition number -- leaving several orders of magnitude of accuracy on the floor
                     for a target ``rank`` k << N -- the cheap option for strongly
                     low-rank systems.
 * ``"auto"`` (default) -- try Cholesky; if the system is ill-conditioned (a
-                    cheap pivot-ratio test) fall back to ``"svd"`` (rank-revealing
-                    -- the feature matrices here are usually rank-deficient).  Recovers the
-                    fast path on well-conditioned problems **without** sacrificing
-                    accuracy on the rest.
+                    cheap pivot-ratio test) use the faster ``"qr"``, and fall back
+                    to rank-revealing ``"svd"`` only if QR's solution blows up (the
+                    feature matrices can be rank-deficient).  Fast path when
+                    well-conditioned, QR speed/accuracy on the rest, SVD as the
+                    safety net.
 
 All back-ends are device/dtype-aware.  Apple-MPS lacks a robust ``svd``/``lstsq``,
 so the factorization is run on CPU and the result moved back (one-time warning).
@@ -40,6 +41,13 @@ import warnings
 import torch
 
 _MPS_WARNED = False
+
+# In ``method="auto"``: above this ``||x|| / (1 + ||b||)`` ratio the unpivoted-QR
+# solve is treated as a rank-deficiency blow-up and handed to the rank-revealing
+# SVD instead.  Real PDE systems measure <= 0.3 here; the degenerate inconsistent
+# (random-RHS) rank-deficient case measures ~3e14 -- so the guard is generous and
+# a false positive only costs speed, never correctness.
+_QR_AUTO_NORM_GUARD = 1e6
 
 
 def _maybe_cpu(A, b):
@@ -109,7 +117,7 @@ def _qr_solve(A, b, mu):
 
 def _auto_solve(A, b, mu, rcond):
     # Cheap conditioning probe: cond(A) ~ max/min Cholesky pivot.  If well within
-    # float64's reach use the fast Cholesky; otherwise fall back to the SVD.
+    # float64's reach use the fast Cholesky.
     try:
         x, L = _cholesky_solve(A, b, mu)
         d = torch.diagonal(L).abs()
@@ -117,6 +125,14 @@ def _auto_solve(A, b, mu, rcond):
             return x
     except torch.linalg.LinAlgError:
         pass
+    # Ill-conditioned: try the faster, backward-stable QR.  On a genuinely
+    # rank-deficient *inconsistent* A unpivoted QR can return a wildly
+    # non-minimum-norm solution, so fall back to the rank-revealing SVD when the
+    # QR solution blows up (or is non-finite).  See _QR_AUTO_NORM_GUARD.
+    x = _qr_solve(A, b, mu)
+    nx = torch.linalg.vector_norm(x)
+    if torch.isfinite(nx) and nx <= _QR_AUTO_NORM_GUARD * (1.0 + torch.linalg.vector_norm(b)):
+        return x
     return _svd_solve(A, b, mu, rcond)
 
 
