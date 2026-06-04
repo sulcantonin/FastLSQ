@@ -4,7 +4,7 @@
 
 
 <p align="center">
-  <img src="misc/fastlsq_teaser.png" alt="FastLSQ method overview" width="400"/>
+  <img src="https://raw.githubusercontent.com/sulcantonin/FastLSQ/main/misc/fastlsq_teaser.png" alt="FastLSQ method overview" width="400"/>
 </p>
 
 **Solving PDEs in one shot via Fourier features with exact analytical derivatives.**
@@ -194,8 +194,8 @@ python examples/learnable_helmholtz.py
 The analytical derivatives enable gradients through the pre-factored solve, making inverse problems tractable. Example: recovering 4 anisotropic Gaussian heat sources (24 parameters) from 4 sparse sensors. The heat equation is solved in space-time; L-BFGS-B optimises source positions and shapes to match sensor time-series. *(Click image for animation.)*
 
 <p align="center">
-  <a href="misc/inverse_heat_source.gif">
-    <img src="misc/inverse_heat_source.png" alt="Inverse heat source localisation" width="700"/>
+  <a href="https://raw.githubusercontent.com/sulcantonin/FastLSQ/main/misc/inverse_heat_source.gif">
+    <img src="https://raw.githubusercontent.com/sulcantonin/FastLSQ/main/misc/inverse_heat_source.png" alt="Inverse heat source localisation" width="700"/>
   </a>
 </p>
 

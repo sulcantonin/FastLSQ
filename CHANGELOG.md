@@ -2,6 +2,53 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [0.2.2] - 2026-06-03
+
+### Fixed
+
+- **Learnable bandwidth now trains.** `LearnableFastLSQ.solve_inner` replaced the
+  backprop-through-`torch.linalg.svd` inner solve (which returned NaN gradients
+  w.r.t. the bandwidth on the clustered singular values of random-feature
+  matrices) with the SVD-based `gelsd` rank-revealing least-squares driver, so
+  `train_bandwidth` / `fit` no longer stall at step 0.
+- **Default-solve accuracy.** Tightened the `_auto_solve` Cholesky-acceptance
+  probe from `rcond**0.5` to `rcond**0.25`, so `method="auto"` falls back to SVD
+  before the normal-equations Cholesky loses half its float64 digits
+  (cond(A) ~ 1e7 previously returned a ~1e-3-accurate answer).
+- **Newton convergence and robustness.** The stop test now combines a *relative*
+  residual criterion (`res_norm < tol_res * R0`) with the relative solution
+  change (`||Δu||/||u|| < tol_du`); the previous unreachable absolute residual
+  tolerance forced every nonlinear solve to run the full `max_iter`. The
+  backtracking line search keeps the previous iterate when no step satisfies
+  Armijo instead of committing a worse point. `solve_nonlinear` default
+  tolerances loosened to `tol_res=1e-8`, `tol_du=1e-10`.
+- **Continuation guard.** `solve_nonlinear` no longer raises `TypeError` when a
+  problem sets `use_continuation=True` without a `nu_target`.
+- **Regression problems solvable via the public API.** Their `get_train_data`
+  now accepts the `n_pde`/`n_bc` signature used by `solve_linear`,
+  `auto_select_scale`, and `check_problem` (was `n_samples`, raising
+  `TypeError`); `auto_select_scale` now raises when every trial fails instead of
+  silently returning the first scale.
+- **Float32 inputs.** `SinusoidalBasis.cache` promotes inputs to the basis
+  dtype/device, so float32 collocation points no longer raise `float != double`.
+- **Checkpoint reload.** `load_checkpoint` passes `weights_only=False`, fixing
+  `UnpicklingError` on torch >= 2.6 (checkpoints store NumPy arrays).
+- **Vector per-component scale.** `VectorFastLSQSolver.add_block` accepts a NumPy
+  array of per-component bandwidths (previously list/tuple only, silently
+  misread as per-dimension).
+- **ElasticWave2D operator.** Scaled the spatial and cross terms by `t_max²`
+  (time normalisation), consistent with `Wave2D_MS`.
+
+### Changed
+
+- Problem modules (`nonlinear.py`, `regression.py`) resolve the device via the
+  live `get_device()` rather than an import-time snapshot.
+- Packaging: the source distribution no longer ships the `misc/` images (the
+  sdist was ~14 MB); project URLs point to `github.com/sulcantonin/FastLSQ`;
+  README images use absolute URLs so they render on PyPI.
+  `examples/orbit_hill.py` solves via rank-revealing `lstsq` rather than a
+  normal-equations Cholesky.
+
 ## [0.2.1] - 2026-06-02
 
 ### Added

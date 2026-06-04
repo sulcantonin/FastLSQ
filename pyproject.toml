@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "FastLSQ"
-version = "0.2.1"
+version = "0.2.2"
 description = "One-shot PDE solving via Fourier features with exact analytical derivatives; rank-revealing solvers, learnable anisotropic bandwidth, and CPU/CUDA/MPS support"
 readme = "README.md"
 license = "MIT"
@@ -55,11 +55,11 @@ lightning = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/asulc/FastLSQ"
-Repository = "https://github.com/asulc/FastLSQ"
+Homepage = "https://github.com/sulcantonin/FastLSQ"
+Repository = "https://github.com/sulcantonin/FastLSQ"
 Paper = "https://arxiv.org/abs/2602.10541"
-"Bug Tracker" = "https://github.com/asulc/FastLSQ/issues"
-Changelog = "https://github.com/asulc/FastLSQ/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/sulcantonin/FastLSQ/issues"
+Changelog = "https://github.com/sulcantonin/FastLSQ/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["fastlsq*"]
