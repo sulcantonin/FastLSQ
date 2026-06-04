@@ -11,15 +11,23 @@ condition number -- leaving several orders of magnitude of accuracy on the floor
 
 ``solve_lstsq`` therefore exposes several back-ends via ``method=``:
 
+* ``"qr"``       -- Householder-QR least squares (ridge via ``[A; sqrt(mu) I]``
+                    augmentation).  Backward-stable at ``cond(A)`` -- SVD-grade
+                    accuracy with no normal-equations squaring and no required
+                    ridge, at ~QR cost (cheaper than SVD).  Assumes (numerically)
+                    full column rank; use ``"svd"`` for a rank-deficient ``A``
+                    (so ``"auto"`` keeps SVD, not QR, as its fallback).
 * ``"svd"``      -- rank-revealing truncated SVD of ``A`` (LAPACK ``gelsd`` fast
-                    path on CPU; explicit SVD elsewhere).  The accuracy reference.
+                    path on CPU; explicit SVD elsewhere).  The accuracy reference;
+                    use for a genuinely rank-deficient ``A``.
 * ``"cholesky"`` -- normal-equations ``(A^T A + mu I)`` Cholesky.  Fast, but only
                     safe when ``A`` is well-conditioned.
 * ``"rsvd"``     -- randomized SVD (range-finder + power iterations).  ``O(MNk)``
                     for a target ``rank`` k << N -- the cheap option for strongly
                     low-rank systems.
 * ``"auto"`` (default) -- try Cholesky; if the system is ill-conditioned (a
-                    cheap pivot-ratio test) fall back to ``"svd"``.  Recovers the
+                    cheap pivot-ratio test) fall back to ``"svd"`` (rank-revealing
+                    -- the feature matrices here are usually rank-deficient).  Recovers the
                     fast path on well-conditioned problems **without** sacrificing
                     accuracy on the rest.
 
@@ -86,6 +94,19 @@ def _rsvd_solve(A, b, mu, rcond, rank, oversample, n_iter):
     return Vh.transpose(-2, -1) @ (filt.unsqueeze(-1) * (U.transpose(-2, -1) @ b))
 
 
+def _qr_solve(A, b, mu):
+    """Householder-QR least squares (ridge via [A; sqrt(mu) I] augmentation).
+    Backward-stable at cond(A): SVD-grade accuracy with NO normal-equations
+    squaring and no required ridge, at ~QR cost (cheaper than SVD).  Assumes
+    (numerically) full column rank; use method='svd' for a rank-deficient A."""
+    if mu:
+        n = A.shape[-1]
+        A = torch.cat([A, (mu ** 0.5) * torch.eye(n, dtype=A.dtype, device=A.device)], dim=-2)
+        b = torch.cat([b, torch.zeros(n, b.shape[-1], dtype=b.dtype, device=b.device)], dim=-2)
+    Q, R = torch.linalg.qr(A, mode="reduced")
+    return torch.linalg.solve_triangular(R, Q.transpose(-2, -1) @ b, upper=True)
+
+
 def _auto_solve(A, b, mu, rcond):
     # Cheap conditioning probe: cond(A) ~ max/min Cholesky pivot.  If well within
     # float64's reach use the fast Cholesky; otherwise fall back to the SVD.
@@ -112,7 +133,7 @@ def solve_lstsq(A, b, mu=0.0, rcond=1e-12, method="auto",
         an unstable add-on).
     rcond : float
         Relative singular-value / pivot threshold for rank determination.
-    method : {"auto", "svd", "cholesky", "rsvd"}
+    method : {"auto", "qr", "svd", "cholesky", "rsvd"}
         Solve back-end (see module docstring).  Default "auto".
     rank, oversample, n_iter : int
         Randomized-SVD parameters (``method="rsvd"`` only).  Set ``rank`` << N for
@@ -127,11 +148,13 @@ def solve_lstsq(A, b, mu=0.0, rcond=1e-12, method="auto",
         x = _auto_solve(A2, b2, mu, rcond)
     elif method == "svd":
         x = _svd_solve(A2, b2, mu, rcond)
+    elif method == "qr":
+        x = _qr_solve(A2, b2, mu)
     elif method == "cholesky":
         x = _cholesky_solve(A2, b2, mu)[0]
     elif method == "rsvd":
         x = _rsvd_solve(A2, b2, mu, rcond, rank, oversample, n_iter)
     else:
         raise ValueError(f"Unknown method {method!r}; "
-                         "choose 'auto', 'svd', 'cholesky', or 'rsvd'.")
+                         "choose 'auto', 'qr', 'svd', 'cholesky', or 'rsvd'.")
     return x.to(mps_dev) if mps_dev is not None else x

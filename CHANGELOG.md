@@ -2,6 +2,32 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [0.2.3] - 2026-06-04
+
+### Added
+
+- **Householder-QR least-squares back-end** `solve_lstsq(..., method="qr")`:
+  backward-stable at `cond(A)` (ridge applied via the `[A; sqrt(mu) I]`
+  augmentation, not the normal equations), giving SVD-grade accuracy (~1e-14 on
+  the Helmholtz random-feature benchmark) at QR cost -- cheaper than `"svd"` and
+  far more accurate than the normal-equations `"cholesky"` (no `cond(A)`
+  squaring, no required ridge). Assumes the system is numerically full column
+  rank; use `"svd"` for a rank-deficient `A`. The default `"auto"` keeps its
+  rank-revealing SVD fallback (these feature matrices are typically
+  rank-deficient), so QR is opt-in via `method="qr"`.
+- **`solve_linear(..., method=...)`**: the linear solve back-end is now
+  selectable from the high-level API (`"auto"`, `"qr"`, `"svd"`, `"cholesky"`,
+  `"rsvd"`; defaults to `"auto"`).
+
+### Changed
+
+- **N-scaled collocation defaults.** `solve_linear` and `solve_nonlinear` now
+  default `n_pde`/`n_bc` to `None` and derive them from the feature count
+  (`n_pde = max(3000, 3 * n_blocks * hidden_size)`, `n_bc = max(800, n_pde // 5)`),
+  replacing the fixed `10000`/`2000` (and `5000`/`1000`) over-sampling that was
+  ~6x the default feature count. Faster for the default configuration; passing
+  explicit `n_pde`/`n_bc` still overrides.
+
 ## [0.2.2] - 2026-06-03
 
 ### Fixed

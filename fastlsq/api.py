@@ -35,10 +35,11 @@ def solve_linear(
     scale: Optional[float] = None,
     n_blocks: int = 3,
     hidden_size: int = 500,
-    n_pde: int = 10000,
-    n_bc: int = 2000,
+    n_pde: Optional[int] = None,
+    n_bc: Optional[int] = None,
     n_test: int = 5000,
     mu: float = 0.0,
+    method: str = "auto",
     auto_scale: bool = True,
     auto_scale_trials: int = 5,
     return_solver: bool = False,
@@ -65,12 +66,17 @@ def solve_linear(
         Number of feature blocks.
     hidden_size : int
         Features per block.
-    n_pde, n_bc : int
-        Number of collocation and boundary points.
+    n_pde, n_bc : int, optional
+        Number of collocation and boundary points. If None, scaled with the
+        feature count: n_pde = max(3000, 3 * n_blocks * hidden_size),
+        n_bc = max(800, n_pde // 5).
     n_test : int
         Number of test points for error evaluation.
     mu : float
         Tikhonov regularisation parameter (0 = no regularisation).
+    method : str
+        Linear solve back-end passed to ``solve_lstsq`` ("auto", "qr", "svd",
+        "cholesky", "rsvd"). Default "auto".
     auto_scale : bool
         If True and scale=None, automatically select scale via grid search.
     auto_scale_trials : int
@@ -92,6 +98,12 @@ def solve_linear(
         - `scale` : float, the scale used
     """
     t0 = time.time()
+
+    n_feat = n_blocks * hidden_size
+    if n_pde is None:
+        n_pde = max(3000, 3 * n_feat)   # ~3x oversampling; fixed 10000 was 6x for default N
+    if n_bc is None:
+        n_bc = max(800, n_pde // 5)
 
     # Auto-select scale if needed
     if scale is None and auto_scale:
@@ -127,7 +139,7 @@ def solve_linear(
 
     # Assemble and solve
     A, b = problem.build(solver, x_pde, *build_args)
-    beta_raw = solve_lstsq(A, b, mu=mu)
+    beta_raw = solve_lstsq(A, b, mu=mu, method=method)
     n_outputs = getattr(problem, "n_outputs", 1)
     solver.beta = unpack_beta(beta_raw, solver.n_features, n_outputs)
 
@@ -170,8 +182,8 @@ def solve_nonlinear(
     scale: Optional[float] = None,
     n_blocks: int = 3,
     hidden_size: int = 500,
-    n_pde: int = 5000,
-    n_bc: int = 1000,
+    n_pde: Optional[int] = None,
+    n_bc: Optional[int] = None,
     n_test: int = 5000,
     max_iter: int = 30,
     tol_res: float = 1e-8,
@@ -202,8 +214,10 @@ def solve_nonlinear(
         Number of feature blocks.
     hidden_size : int
         Features per block.
-    n_pde, n_bc : int
-        Number of collocation and boundary points.
+    n_pde, n_bc : int, optional
+        Number of collocation and boundary points. If None, scaled with the
+        feature count: n_pde = max(3000, 3 * n_blocks * hidden_size),
+        n_bc = max(800, n_pde // 5).
     n_test : int
         Number of test points for error evaluation.
     max_iter : int
@@ -238,6 +252,12 @@ def solve_nonlinear(
         - `scale` : float, the scale used
     """
     t0 = time.time()
+
+    n_feat = n_blocks * hidden_size
+    if n_pde is None:
+        n_pde = max(3000, 3 * n_feat)   # ~3x oversampling; fixed 10000 was 6x for default N
+    if n_bc is None:
+        n_bc = max(800, n_pde // 5)
 
     # Auto-select scale if needed
     if scale is None and auto_scale:
