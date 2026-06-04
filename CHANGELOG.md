@@ -9,18 +9,25 @@ All notable changes to FastLSQ will be documented in this file.
 - **Householder-QR least-squares back-end** `solve_lstsq(..., method="qr")`:
   backward-stable at `cond(A)` (ridge applied via the `[A; sqrt(mu) I]`
   augmentation, not the normal equations), giving SVD-grade accuracy (~1e-14 on
-  the Helmholtz random-feature benchmark) at QR cost -- cheaper than `"svd"` and
-  far more accurate than the normal-equations `"cholesky"` (no `cond(A)`
+  the Helmholtz random-feature benchmark) at QR cost -- and, on the
+  rank-deficient CPU/no-ridge path, faster than the `gelsd` `"svd"` driver too,
+  while far more accurate than the normal-equations `"cholesky"` (no `cond(A)`
   squaring, no required ridge). Assumes the system is numerically full column
-  rank; use `"svd"` for a rank-deficient `A`. The default `"auto"` keeps its
-  rank-revealing SVD fallback (these feature matrices are typically
-  rank-deficient), so QR is opt-in via `method="qr"`.
+  rank; `"svd"` remains the rank-deficient-safe reference.
 - **`solve_linear(..., method=...)`**: the linear solve back-end is now
   selectable from the high-level API (`"auto"`, `"qr"`, `"svd"`, `"cholesky"`,
   `"rsvd"`; defaults to `"auto"`).
 
 ### Changed
 
+- **`method="auto"` now tries QR before SVD.** After the Cholesky conditioning
+  probe rejects the fast path, `auto` uses the faster, more accurate QR solve and
+  falls back to the rank-revealing SVD only when QR's solution blows up
+  (`||x|| / (1 + ||b||)` above a generous guard). Real PDE systems measure
+  `<= 0.3` and keep QR; genuinely rank-deficient *inconsistent* systems (e.g. a
+  random RHS) measure ~3e14 and route to SVD. Net: the default solve is faster
+  and at least as accurate on real problems, with minimum-norm SVD preserved
+  exactly where it is needed.
 - **N-scaled collocation defaults.** `solve_linear` and `solve_nonlinear` now
   default `n_pde`/`n_bc` to `None` and derive them from the feature count
   (`n_pde = max(3000, 3 * n_blocks * hidden_size)`, `n_bc = max(800, n_pde // 5)`),
