@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "FastLSQ"
-version = "0.2.4"
+version = "0.2.5"
 description = "One-shot PDE solving via Fourier features with exact analytical derivatives; rank-revealing solvers, learnable anisotropic bandwidth, and CPU/CUDA/MPS support"
 readme = "README.md"
 license = "MIT"
