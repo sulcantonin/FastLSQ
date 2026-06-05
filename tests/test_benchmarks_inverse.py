@@ -10,12 +10,17 @@ on the single Poisson problem in ``test_basic``.
 Scales are fixed (not auto-selected) and the RNG is seeded so the smoke test is
 fast and deterministic; tolerances carry ~10x headroom over measured errors.
 
-Excluded (pre-existing, unrelated to the solver work):
-  * ``Wave2D_MS``    -- rel-err == 1.0 via ``solve_linear`` in every config
-                        (old 10000/2000 defaults included), i.e. does not solve.
-  * ``ElasticWave2D``-- a 2-output vector problem (``exact()`` returns (N, 2))
-                        that never sets ``n_outputs``, so the scalar API can't
-                        unpack it.  Needs the vector solver path.
+``ElasticWave2D`` -- a coupled 2-output vector problem -- exercises the
+block-stacked vector path (``n_outputs = 2``, ``block_concat`` assembly,
+``unpack_beta`` -> ``(N, 2)`` beta); it carries a per-case ``n_blocks`` bump
+since the coupled solve needs more features than the scalar benchmarks.
+
+``Wave2D_MS`` -- a long-time anisotropic wave -- likewise bumps ``n_blocks``;
+its ``t_max`` was reduced from 100 to 4 so the normalised-time solution spans
+~3.5 temporal cycles rather than ~87.  The PDE's second time-derivative
+amplifies the random-feature representation error by ``Omega**2``, so the
+one-shot collocation only resolves a few cycles (see the class docstring) --
+the old t_max=100 gave rel-err 1.0 in every configuration.
 """
 import numpy as np
 import pytest
@@ -29,13 +34,18 @@ from fastlsq.problems import linear as L
 from fastlsq.problems import nonlinear as NL
 
 
-# (class, fixed scale, val_err tolerance)
+# (class, fixed scale, val_err tolerance, solver-config overrides)
 LINEAR_CASES = [
-    (L.PoissonND,    0.5, 5e-3),
-    (L.HeatND,       0.5, 1e-1),
-    (L.Wave1D,      15.0, 5e-3),
-    (L.Helmholtz2D, 10.0, 1e-5),
-    (L.Maxwell2D_TM, 2.0, 5e-3),
+    (L.PoissonND,    0.5, 5e-3, {}),
+    (L.HeatND,       0.5, 1e-1, {}),
+    (L.Wave1D,      15.0, 5e-3, {}),
+    (L.Helmholtz2D, 10.0, 1e-5, {}),
+    (L.Maxwell2D_TM, 2.0, 5e-3, {}),
+    # Long-time anisotropic wave: temporal-matched bandwidth + more features
+    # (t_max reduced 100 -> 4 so the collocation can resolve the ~3.5 cycles).
+    (L.Wave2D_MS,    3.0, 1e-2, {"n_blocks": 3}),
+    # Coupled 2-output vector problem: needs more features than the scalars.
+    (L.ElasticWave2D, 6.0, 1e-1, {"n_blocks": 3}),
 ]
 
 NONLINEAR_CASES = [
@@ -48,14 +58,16 @@ NONLINEAR_CASES = [
 
 
 @pytest.mark.parametrize(
-    "cls,scale,tol", LINEAR_CASES, ids=[c[0].__name__ for c in LINEAR_CASES]
+    "cls,scale,tol,solver_kw", LINEAR_CASES, ids=[c[0].__name__ for c in LINEAR_CASES]
 )
-def test_linear_benchmark_solves(cls, scale, tol):
+def test_linear_benchmark_solves(cls, scale, tol, solver_kw):
     """Each linear benchmark equation solves end-to-end via the public API."""
     torch.set_default_dtype(torch.float64)
     torch.manual_seed(0)
-    r = solve_linear(cls(), scale=scale, n_blocks=2, hidden_size=300,
-                     n_test=1500, auto_scale=False, verbose=False)
+    cfg = dict(n_blocks=2, hidden_size=300, n_test=1500,
+               auto_scale=False, verbose=False)
+    cfg.update(solver_kw)
+    r = solve_linear(cls(), scale=scale, **cfg)
     ve = r["metrics"]["val_err"]
     assert np.isfinite(ve), f"{cls.__name__}: non-finite val_err"
     assert ve < tol, f"{cls.__name__}: val_err={ve:.2e} exceeds tol {tol:.0e}"

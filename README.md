@@ -14,9 +14,12 @@ analytical derivative engine for random Fourier features.  For sinusoidal
 features `phi_j(x) = sin(W_j . x + b_j)`, every derivative of every order
 admits an exact closed-form expression -- no automatic differentiation needed.
 
-Linear PDEs are solved in a single least-squares step; nonlinear PDEs are
-solved via Newton-Raphson iteration with Tikhonov regularisation,
-1/sqrt(N) feature normalisation, and continuation/homotopy.
+Linear PDEs are solved in a single least-squares step.  The random-feature
+system is typically rank-deficient, so the solve is routed through a
+backward-stable, auto-selected least-squares back-end (Cholesky fast-path ->
+Householder QR -> rank-revealing SVD) that runs on CPU, CUDA, or Apple-MPS.
+Nonlinear PDEs are solved via Newton-Raphson iteration with Tikhonov
+regularisation, 1/sqrt(N) feature normalisation, and continuation/homotopy.
 
 ## Installation
 
@@ -27,7 +30,7 @@ pip install fastlsq
 For development (includes testing and build tools):
 
 ```bash
-git clone https://github.com/asulc/FastLSQ.git
+git clone https://github.com/sulcantonin/FastLSQ.git
 cd FastLSQ
 pip install -e ".[dev]"
 ```
@@ -58,6 +61,26 @@ result = solve_nonlinear(problem, max_iter=30)
 
 print(f"Converged in {result['n_iters']} iterations")
 print(f"Value error: {result['metrics']['val_err']:.2e}")
+```
+
+### Choose a solver back-end and device
+
+The linear solve is routed automatically, but `solve_linear` exposes the
+back-end via `method=` (see [How it works](#how-it-works) for the routing):
+
+```python
+from fastlsq import solve_linear, set_device
+from fastlsq.problems.linear import PoissonND
+
+# "auto" (default) -- Cholesky fast-path -> QR -> rank-revealing SVD
+# "qr"             -- Householder QR; SVD-grade accuracy at QR cost (full-rank A)
+# "svd"            -- rank-revealing truncated SVD; the rank-deficient-safe reference
+# "cholesky"       -- normal-equations Cholesky; fast, well-conditioned A only
+# "rsvd"           -- randomized SVD, O(MNk), for strongly low-rank A
+result = solve_linear(PoissonND(), scale=5.0, method="qr")
+
+# Device selection (CPU / CUDA / Apple-MPS), or set FASTLSQ_DEVICE=cuda
+set_device("cuda")   # the float64 default stays on CPU/CUDA; MPS is float32-only
 ```
 
 ### Use the basis directly
@@ -163,9 +186,10 @@ u_yy = A @ solver.beta                           # (M, k): ∂²u/∂y² per com
 
 Scalar problems are untouched: `n_outputs` defaults to `1`, `solver.beta` keeps
 shape `(N, 1)`, and `predict_with_grad` returns gradient shape `(M, d)` for
-backward compatibility (the trailing component axis is squeezed when k=1).
-`ElasticWave2D` in [fastlsq/problems/linear.py](fastlsq/problems/linear.py) is
-the canonical coupled vector example.
+backward compatibility (the trailing component axis is squeezed when k=1). The
+`Stokes2D` sketch above and [tests/test_block.py](tests/test_block.py) -- a
+runnable `block_concat` + `unpack_beta` solve that recovers both components of a
+k=2 system -- are the reference for the block-stacked vector path.
 
 ### Plot solutions
 
@@ -217,11 +241,15 @@ derivative engine:
 | `FastLSQSolver` | Manages feature blocks; exposes `.basis` for all derivative computations |
 | `LearnableFastLSQ` | Differentiable solver with learnable bandwidth via reparameterisation trick |
 | `block_concat`, `pack_beta`, `unpack_beta` | Block-structured assembly helpers for vector-valued **u** (coupled systems). `solver.beta` has shape `(N, k)`; scalar problems are the k=1 case |
+| `solve_lstsq` | Multi-back-end least-squares solve (`auto`/`qr`/`svd`/`cholesky`/`rsvd`); rank-revealing by default for the rank-deficient feature matrix |
+| `resolve_device` / `set_device` / `get_device` | CPU / CUDA / Apple-MPS selection, dtype-aware (MPS is float32-only; factorizations fall back to CPU) |
 
 ### How it works
 
 1. **Basis construction.** Given collocation points **x**, construct a
-   `SinusoidalBasis` with random weights W and biases b.
+   `SinusoidalBasis` with random weights W and biases b. The collocation counts
+   default to scale with the feature count
+   (`n_pde = max(3000, 3 * n_blocks * hidden_size)`, `n_bc = max(800, n_pde // 5)`).
 
 2. **Analytical derivatives.** Exploit the cyclic derivative identity:
    the n-th derivative of sin(z) cycles through {sin, cos, -sin, -cos}
@@ -232,8 +260,13 @@ derivative engine:
    (e.g. `Op.laplacian(d=2)`) and apply it to the basis to get the system
    matrix `A`.
 
-4. **Linear solve.** Solve `A beta = b` via least squares
-   (optionally Tikhonov-regularised).
+4. **Linear solve.** Solve `A beta = b` in the least-squares sense. The
+   random-feature matrix `A` is typically rank-deficient (near-duplicate
+   columns), so the default `method="auto"` starts from a Cholesky fast-path
+   (guarded by a cheap conditioning probe), falls back to backward-stable
+   Householder **QR**, and resorts to a rank-revealing **SVD** only if the QR
+   solution blows up. A Tikhonov ridge `mu` enters via the `[A; sqrt(mu) I]`
+   augmentation, not the condition-squaring normal equations.
 
 5. **Newton iteration (nonlinear).** Linearise the PDE residual, solve
    `J delta_beta = -R` with backtracking line search, and repeat.
@@ -295,9 +328,12 @@ See `examples/add_your_own_pde.py` for the complete tutorial.
 - **Symbolic PDE operators**: Compose differential operators with `Op` (Laplacian, wave, Helmholtz, biharmonic, custom) via intuitive arithmetic; coefficients can be `nn.Parameter` for AdamW optimisation
 - **Vector-valued solutions**: First-class support for **u**: ℝᵈ → ℝᵏ (elasticity, Stokes, Maxwell). Problems declare `n_outputs = k`; `block_concat` assembles coupled block systems; `solver.predict(x)` returns shape `(M, k)`. Scalar problems are the `k=1` case
 - **High-level API**: Solve PDEs in one line with `solve_linear()` and `solve_nonlinear()`
+- **Robust linear solver**: Pluggable least-squares back-ends; the default `auto` routes Cholesky -> QR -> SVD, and backward-stable QR delivers SVD-grade accuracy at QR cost on the rank-deficient random-feature system
 - **Learnable bandwidth**: `LearnableFastLSQ` optimises the bandwidth (scalar or anisotropic) via reparameterisation
 - **Learnable PDE coefficients**: Plug `nn.Parameter` into `Op` (e.g. Helmholtz wavenumber `k`) and optimise via AdamW; gradients flow through the prebuilt linear solve
 - **Auto-tuning**: Automatic scale selection via grid search
+- **Device support**: CPU / CUDA / Apple-MPS via `set_device()` or the `FASTLSQ_DEVICE` env var, dtype-aware (the float64 high-accuracy path stays on CPU/CUDA)
+- **Adaptive collocation**: `n_pde` / `n_bc` default to feature-count-scaled values, overridable per solve
 - **Built-in plotting**: Solution visualization, convergence plots, spectral sensitivity
 - **Geometry samplers**: Box, ball, sphere, interval, custom samplers
 - **Diagnostics**: Problem validation, conditioning checks, error detection

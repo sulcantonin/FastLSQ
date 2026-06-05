@@ -44,7 +44,7 @@ from fastlsq.export import (
 )
 from fastlsq import viz
 
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 __all__ = [
     # Device selection (CPU / CUDA / Apple-MPS, dtype-aware)
     "resolve_device",
