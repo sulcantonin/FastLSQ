@@ -125,8 +125,13 @@ def _auto_solve(A, b, mu, rcond):
             return x
     except torch.linalg.LinAlgError:
         pass
-    # Ill-conditioned: try the faster, backward-stable QR.  On a genuinely
-    # rank-deficient *inconsistent* A unpivoted QR can return a wildly
+    # Ill-conditioned.  On CPU with no ridge the LAPACK gelsd driver is both
+    # faster than Householder QR *and* rank-deficient-safe, so go straight to it
+    # -- the QR + blow-up-guard detour would only add a full extra factorization.
+    if not mu and A.device.type == "cpu":
+        return _svd_solve(A, b, mu, rcond)
+    # Otherwise (ridge, or non-CPU device) try the backward-stable QR.  On a
+    # genuinely rank-deficient *inconsistent* A unpivoted QR can return a wildly
     # non-minimum-norm solution, so fall back to the rank-revealing SVD when the
     # QR solution blows up (or is non-finite).  See _QR_AUTO_NORM_GUARD.
     x = _qr_solve(A, b, mu)
