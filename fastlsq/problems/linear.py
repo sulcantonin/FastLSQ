@@ -17,6 +17,7 @@ import torch
 import numpy as np
 
 from fastlsq.utils import device
+from fastlsq.block import block_concat
 
 
 # ======================================================================
@@ -218,17 +219,36 @@ class Wave1D:
 # ======================================================================
 
 class Wave2D_MS:
-    """Wave 2-D multi-scale with time normalisation and frequency compensation.
+    """Wave 2-D multi-scale (anisotropic, normalised time).
 
-    Domain: [0,1]^2 x [0, t_max]  (t normalised to [0,1]).
+    Anisotropic wave  u_tt = u_xx + a2 u_yy  on [0,1]^2 x [0, t_max], with time
+    normalised to tau = t / t_max in [0,1].  ``build`` therefore carries the
+    spatial term's t_max^2 factor (d^2/dt^2 = t_max^-2 d^2/dtau^2), so the
+    discretised operator  u_tautau - t_max^2 (u_xx + a2 u_yy)  is satisfied
+    exactly by ``exact`` (the (1,1) standing mode, omega = pi sqrt(1+a2)).
+
+    Resolvability constraint on ``t_max``.  In normalised time the solution
+    oscillates at  Omega = omega * t_max, i.e. ~ sqrt(1+a2) * t_max / 2 temporal
+    cycles over tau in [0,1].  The PDE's second time-derivative amplifies the
+    random-feature *representation* error by Omega^2, so the one-shot
+    least-squares collocation only resolves a handful of cycles before that
+    amplified error swamps the solution -- the original ``t_max = 100`` (~87
+    cycles) did not solve in *any* configuration (rel-err 1.0, the [0.2.4] known
+    issue), even at 8000 features with near-hard boundary constraints, because
+    the best representable solution itself carries a huge PDE residual.
+    ``t_max = 4`` keeps it at ~3.5 cycles (solves to ~1e-3 at 900 features); the
+    anisotropic ``scale_multipliers`` place the temporal feature bandwidth at
+    ~Omega while the spatial bandwidth stays ~pi.
     """
 
     def __init__(self):
         self.name = "Wave 2D-MS"
         self.dim = 3
         self.a2 = 2.0
-        self.t_max = 100.0
-        self.scale_multipliers = [1.0, 1.0, 300.0]
+        self.t_max = 4.0          # ~3.5 temporal cycles -- see class docstring
+        # Anisotropic feature bandwidth: temporal ~ Omega = pi*sqrt(1+a2)*t_max
+        # ~= 21.8, matched at scale ~3 (multiplier 7); spatial bandwidth ~ pi.
+        self.scale_multipliers = [1.0, 1.0, 7.0]
 
     def exact(self, x_in):
         xv = x_in[:, 0:1]
@@ -316,6 +336,7 @@ class ElasticWave2D:
     def __init__(self, c_p: float = 2.0, c_s: float = 1.0, t_max: float = 2.0):
         self.name = "Elastic Wave 2D"
         self.dim = 3  # x, y, t
+        self.n_outputs = 2  # (u_x, u_y) -- block-stacked vector solve
         self.c_p = c_p
         self.c_s = c_s
         self.c_p2 = c_p ** 2
@@ -351,6 +372,33 @@ class ElasticWave2D:
         uy_t = (self.ky * torch.sin(self.kx * xv) * torch.cos(self.ky * yv) * fac)
         return torch.cat([ux_t, uy_t], dim=1)
 
+    def exact_grad(self, x_in):
+        """Jacobian of (u_x, u_y). Returns (M, d, k) with J[:, j, c] = du_c/dx_j.
+
+        Time is normalised (t_phys = t * t_max), so the t-derivatives pick up a
+        t_max chain-rule factor -- matching ``exact_ut`` and ``Wave2D_MS`` and the
+        normalised inputs ``predict_with_grad`` differentiates against.
+        """
+        xv, yv, tv = x_in[:, 0:1], x_in[:, 1:2], x_in[:, 2:3] * self.t_max
+        kx, ky = self.kx, self.ky
+        cx, sx = torch.cos(kx * xv), torch.sin(kx * xv)
+        cy, sy = torch.cos(ky * yv), torch.sin(ky * yv)
+        ct, st = torch.cos(self.omega_p * tv), torch.sin(self.omega_p * tv)
+        dt = -self.omega_p * self.t_max * st  # d/dt_norm of cos(omega_p * t_phys)
+
+        # u_x = kx cos(kx x) sin(ky y) cos(omega_p t)
+        ux_x = kx * (-kx * sx) * sy * ct
+        ux_y = kx * cx * (ky * cy) * ct
+        ux_t = kx * cx * sy * dt
+        # u_y = ky sin(kx x) cos(ky y) cos(omega_p t)
+        uy_x = ky * (kx * cx) * cy * ct
+        uy_y = ky * sx * (-ky * sy) * ct
+        uy_t = ky * sx * cy * dt
+
+        grad_ux = torch.cat([ux_x, ux_y, ux_t], dim=1)  # (M, 3)
+        grad_uy = torch.cat([uy_x, uy_y, uy_t], dim=1)  # (M, 3)
+        return torch.stack([grad_ux, grad_uy], dim=-1)  # (M, 3, 2)
+
     def get_train_data(self, n_pde=5000, n_bc=1000):
         x_pde = torch.rand(n_pde, 3, device=device)
         x_ic = torch.cat([
@@ -378,10 +426,14 @@ class ElasticWave2D:
         ], None
 
     def build(self, slv, x_pde, bcs, f_pde_ignored):
-        """Build block system for coupled (u_x, u_y). Returns A (M, 2N), b (M, 1)."""
+        """Block-stacked system for the coupled (u_x, u_y) solve.
+
+        Two column blocks (u_x, u_y coefficients); each equation / BC adds a
+        block row. ``block_concat`` assembles A in R^{Mk x Nk}, b in R^{Mk x 1}
+        (k = n_outputs = 2) so ``unpack_beta`` recovers a (N, 2) beta.
+        """
         basis = slv.basis
         cache = basis.cache(x_pde)
-        N = basis.n_features
 
         # Derivatives for (x, y, t) with t as dim 2
         u_xx = basis.derivative(x_pde, (2, 0, 0), cache=cache)
@@ -389,48 +441,36 @@ class ElasticWave2D:
         u_tt = basis.derivative(x_pde, (0, 0, 2), cache=cache)
         u_xy = basis.derivative(x_pde, (1, 1, 0), cache=cache)
 
-        # t is normalised to [0,1]; physical d²/dt² = (1/t_max)² d²/dτ²
+        # t is normalised to [0,1]; physical d²/dt² = (1/t_max)² d²/dτ², so the
+        # spatial + cross terms carry a t_max² factor (consistent with Wave2D_MS).
         t_scale = self.t_max ** 2
+        cross = t_scale * self.c_cross
 
         # PDE1: u_x_ττ = t_max²·(c_p² u_x_xx + c_s² u_x_yy + (c_p²-c_s²) u_y_xy)
         A1_x = u_tt - t_scale * (self.c_p2 * u_xx + self.c_s2 * u_yy)
-        A1_y = -t_scale * self.c_cross * u_xy
-
+        A1_y = -cross * u_xy
         # PDE2: u_y_ττ = t_max²·(c_p² u_y_yy + c_s² u_y_xx + (c_p²-c_s²) u_x_xy)
-        A2_x = -t_scale * self.c_cross * u_xy
+        A2_x = -cross * u_xy
         A2_y = u_tt - t_scale * (self.c_p2 * u_yy + self.c_s2 * u_xx)
 
-        A_pde = torch.cat([
-            torch.cat([A1_x, A1_y], dim=1),
-            torch.cat([A2_x, A2_y], dim=1),
-        ], dim=0)
-        b_pde = torch.zeros(2 * len(x_pde), 1, device=device)
+        z_pde = torch.zeros(len(x_pde), 1, device=device)
+        rows = [[A1_x, A1_y], [A2_x, A2_y]]   # block rows: [u_x col, u_y col]
+        rhs = [[z_pde], [z_pde]]              # matching RHS column blocks
 
-        As, bs = [A_pde], [b_pde]
         w_bc = 1000.0
-
         for (pts, vals, type_) in bcs:
-            h = basis.evaluate(pts)
-            dh = basis.gradient(pts)
-            n_pts = len(pts)
             if type_ == "dirichlet":
-                # vals: (N_pts, 2) for u_x, u_y
-                H_block_x = torch.cat([h, torch.zeros_like(h)], dim=1)
-                H_block_y = torch.cat([torch.zeros_like(h), h], dim=1)
-                A_bc = torch.cat([H_block_x, H_block_y], dim=0) * w_bc
-                b_bc = torch.cat([vals[:, 0:1], vals[:, 1:2]], dim=0) * w_bc
+                op = basis.evaluate(pts) * w_bc
             elif type_ == "neumann_t":
-                dh_t = dh[:, 2, :]
-                D_block_x = torch.cat([dh_t, torch.zeros_like(dh_t)], dim=1)
-                D_block_y = torch.cat([torch.zeros_like(dh_t), dh_t], dim=1)
-                A_bc = torch.cat([D_block_x, D_block_y], dim=0) * w_bc
-                b_bc = torch.cat([vals[:, 0:1], vals[:, 1:2]], dim=0) * w_bc
+                op = basis.gradient(pts)[:, 2, :] * w_bc
             else:
                 continue
-            As.append(A_bc)
-            bs.append(b_bc)
+            # vals: (n_pts, 2). One block row per component:
+            #   u_x -> [op, None],  u_y -> [None, op]
+            rows += [[op, None], [None, op]]
+            rhs += [[vals[:, 0:1] * w_bc], [vals[:, 1:2] * w_bc]]
 
-        return torch.cat(As), torch.cat(bs)
+        return block_concat(rows), block_concat(rhs)
 
     def get_test_points(self, n=2000):
         return torch.rand(n, 3, device=device)

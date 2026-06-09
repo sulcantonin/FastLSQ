@@ -20,7 +20,7 @@ from fastlsq.utils import device
 # ----------------------------------------------------------------------
 
 def test_version():
-    assert fastlsq.__version__ == "0.2.3"
+    assert fastlsq.__version__ == "0.2.5"
 
 
 def test_imports():

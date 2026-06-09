@@ -2,6 +2,60 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [0.2.5] - 2026-06-04
+
+### Fixed
+
+- **`Wave2D_MS` solves via `solve_linear`.** The long-time anisotropic wave
+  returned relative value error 1.0 in every configuration because its
+  `t_max = 100` time normalisation packed ~87 temporal cycles into `tau ∈ [0,1]`:
+  the PDE's second time-derivative amplifies the random-feature *representation*
+  error by `Omega²` (`Omega = pi·sqrt(1+a2)·t_max`), so the one-shot
+  least-squares collocation cannot resolve the oscillation -- even 8000 features
+  with near-hard boundary constraints stay at rel-err 1.0, because the best
+  representable solution itself carries a huge PDE residual. Reducing `t_max` to
+  `4` (~3.5 cycles) and matching the anisotropic temporal feature bandwidth to
+  `Omega` (`scale_multipliers = [1, 1, 7]`) recovers the solution to ~3e-4 at
+  900 features (`scale = 3`); the exactly-consistent `t_max²`-scaled operator is
+  unchanged. Added to the `tests/test_benchmarks_inverse.py` linear smoke test.
+  Resolves the `Wave2D_MS` [0.2.4] known issue.
+- **`ElasticWave2D` solves via the block-stacked vector path.** The coupled
+  2-output elastic-wave problem now declares `n_outputs = 2`, assembles its
+  operator in block-stacked form (`A ∈ ℝ^{Mk×Nk}`, `b ∈ ℝ^{Mk×1}`) via
+  `block_concat`, and gains the `exact_grad` Jacobian (shape `(M, d, k)`, time
+  axis chain-ruled by `t_max`) that the error metric requires. `unpack_beta` now
+  recovers a `(N, 2)` `beta`, so `solve_linear(ElasticWave2D(), scale=5.0)`
+  recovers both components (relative value error ~7e-3 at the default
+  resolution) instead of failing to unpack the vector solution. Added to the
+  `tests/test_benchmarks_inverse.py` linear smoke test. Resolves the
+  `ElasticWave2D` [0.2.4] known issue; the `t_max²` operator scaling from
+  [0.2.2] (consistent with `Wave2D_MS`) is preserved.
+
+## [0.2.4] - 2026-06-04
+
+### Added
+
+- **Benchmark + inverse-problem test suite** (`tests/test_benchmarks_inverse.py`):
+  12 deterministic smoke tests (~11 s) that solve the linear (`PoissonND`,
+  `HeatND`, `Wave1D`, `Helmholtz2D`, `Maxwell2D_TM`) and nonlinear
+  (`NLPoisson2D`, `Bratu2D`, `SteadyBurgers1D`, `NLHelmholtz2D`, `AllenCahn1D`)
+  benchmark equations through the public `solve_linear` / `solve_nonlinear` API,
+  plus two inverse pipelines -- Gaussian source-position recovery (forward solve
+  + L-BFGS) and SINDy-style PDE discovery via analytical derivatives --
+  exercising the 0.2.3 QR / N-scaled-collocation solver path end to end.
+
+### Known issues
+
+- `Wave2D_MS` does not solve via `solve_linear` (relative error 1.0 in every
+  configuration tested) -- a pre-existing problem-definition gap, independent of
+  the solver work, excluded from the new smoke test pending a fix. *(Fixed in
+  [0.2.5]: `t_max` reduced 100 -> 4 so the normalised-time oscillation
+  (~3.5 vs ~87 cycles) is resolvable; now covered by the smoke test.)*
+- `ElasticWave2D` -- a 2-output vector problem whose `exact()` returns `(N, 2)`
+  -- never sets `n_outputs`, so the scalar API cannot unpack it; also excluded
+  here. *(Fixed in [0.2.5]: it now uses the block-stacked vector path and
+  is covered by the smoke test.)*
+
 ## [0.2.3] - 2026-06-04
 
 ### Added
