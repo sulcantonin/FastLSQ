@@ -2,6 +2,17 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [0.2.6] - 2026-06-09
+
+### Changed
+
+- **Faster `_auto_solve` fallback for ill-conditioned systems.** When the
+  Cholesky path fails on CPU with no ridge (`mu = 0`), `_auto_solve` now goes
+  straight to the rank-deficient-safe SVD solve (LAPACK `gelsd`) instead of
+  first attempting Householder QR with the blow-up guard -- on CPU `gelsd` is
+  faster than QR, so the detour only added a full extra factorization. The
+  QR-then-SVD path is unchanged for ridge solves and non-CPU devices.
+
 ## [0.2.5] - 2026-06-04
 
 ### Fixed
