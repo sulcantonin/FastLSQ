@@ -20,6 +20,22 @@ This module makes that identity the central, first-class abstraction:
                          operators that compose via +, −, scalar *.
                          Aliased as ``Op`` for concise usage.
 
+The very same identity runs *backwards*: integration is differentiation of
+*negative* order.  Since ∫ sin(w x + b) dx = −(1/w) cos(w x + b), an
+antiderivative is just a term with a negative multi-index entry and a
+reciprocal prefactor 1/w.  So the calculus is closed in *both* directions:
+
+* ``DiffOperator.antiderivative`` -- indefinite ∫ as a negative-order partial.
+* ``IntegralOperator``            -- definite / running (Volterra) integrals
+                                     with limits, evaluated in closed form.
+* ``IntegroDifferentialOperator`` -- the common roof under which differential
+                                     and integral terms compose into one
+                                     linear-in-coefficients design matrix.
+
+That turns "exact closed-form *derivatives* → linear least squares" into
+"exact closed-form *calculus*": integro-differential and integral equations
+are assembled and solved in exactly the same one-shot LSQ.
+
 Example
 -------
 >>> from fastlsq.basis import SinusoidalBasis, Op
@@ -119,12 +135,25 @@ class SinusoidalBasis:
         Bias / phase vector.
     normalize : bool
         If True, all outputs are scaled by 1/√N.
+    dc_eps : float
+        DC guard for *integration* (negative-order derivatives).  A feature whose
+        frequency along an integrated axis satisfies ``|W_{jk}| <= dc_eps`` has no
+        sinusoidal antiderivative (its primitive is a ramp that leaves the basis),
+        so its column is zeroed instead of dividing by ~0.  Only affects negative
+        orders; ordinary derivatives are untouched.
     """
 
-    def __init__(self, W: torch.Tensor, b: torch.Tensor, normalize: bool = True):
+    def __init__(
+        self,
+        W: torch.Tensor,
+        b: torch.Tensor,
+        normalize: bool = True,
+        dc_eps: float = 1e-8,
+    ):
         self.W = W
         self.b = b
         self._inv_norm = 1.0 / np.sqrt(W.shape[1]) if normalize else 1.0
+        self._dc_eps = dc_eps
 
     @property
     def input_dim(self) -> int:
@@ -145,11 +174,12 @@ class SinusoidalBasis:
         n_features: int,
         sigma: float = 1.0,
         normalize: bool = True,
+        dc_eps: float = 1e-8,
     ) -> SinusoidalBasis:
         """Create a basis with isotropic Gaussian weights."""
         W = torch.randn(input_dim, n_features, device=get_device()) * sigma
         b = torch.rand(1, n_features, device=get_device()) * 2 * np.pi
-        return cls(W, b, normalize=normalize)
+        return cls(W, b, normalize=normalize, dc_eps=dc_eps)
 
     @classmethod
     def random_anisotropic(
@@ -158,13 +188,14 @@ class SinusoidalBasis:
         n_features: int,
         sigma: Union[list, np.ndarray, torch.Tensor],
         normalize: bool = True,
+        dc_eps: float = 1e-8,
     ) -> SinusoidalBasis:
         """Create a basis with per-dimension bandwidths."""
         W = torch.randn(input_dim, n_features, device=get_device())
         s = torch.as_tensor(sigma, device=get_device(), dtype=W.dtype).reshape(-1, 1)
         W = W * s
         b = torch.rand(1, n_features, device=get_device()) * 2 * np.pi
-        return cls(W, b, normalize=normalize)
+        return cls(W, b, normalize=normalize, dc_eps=dc_eps)
 
     # ------------------------------------------------------------------
     # Caching
@@ -194,9 +225,17 @@ class SinusoidalBasis:
         Parameters
         ----------
         x : Tensor, shape (M, d)
-        alpha : tuple of d non-negative integers
+        alpha : tuple of d integers
             Multi-index specifying the derivative order per dimension.
             E.g. (2, 0) = ∂²/∂x₀², (1, 1) = ∂²/∂x₀∂x₁.
+
+            *Negative* entries denote (indefinite) **integration**: the same cyclic
+            identity run backwards, with a reciprocal prefactor.  E.g. (-1, 0) is the
+            antiderivative ∫·dx₀ = −cos(Z)/W₀, and mixed signs like (-1, 1) give
+            ∂/∂x₁ ∫·dx₀ = (W₁/W₀) sin(Z).  See :meth:`DiffOperator.antiderivative`.
+            The arbitrary constant of integration leaves the sinusoidal family and is
+            *not* represented here; features with ``|W_{jk}| <= dc_eps`` along an
+            integrated axis are zeroed (see ``dc_eps``).
         cache : BasisCache, optional
             Reuse pre-computed sin/cos from a previous call.
 
@@ -208,17 +247,79 @@ class SinusoidalBasis:
             cache = self.cache(x)
 
         order = sum(alpha)
-        base = cache.phase(order)  # (M, N)
+        base = cache.phase(order)  # (M, N); phase() handles order % 4 for negative orders
 
-        # Monomial prefactor: ∏_k W_k^{α_k}
+        # Monomial prefactor: ∏_k W_k^{α_k}.  Positive α_k multiply by W_k (derivative);
+        # negative α_k divide (integration), DC-guarded against ~0 frequencies.
         prefactor = torch.ones(
             1, self.n_features, device=self.W.device, dtype=self.W.dtype
         )
         for k, a_k in enumerate(alpha):
+            if a_k == 0:
+                continue
+            Wk = self.W[k : k + 1, :]
             if a_k > 0:
-                prefactor = prefactor * (self.W[k : k + 1, :] ** a_k)
+                prefactor = prefactor * (Wk ** a_k)
+            else:
+                safe = Wk.abs() > self._dc_eps
+                Wk_safe = torch.where(safe, Wk, torch.ones_like(Wk))
+                prefactor = prefactor * torch.where(
+                    safe, Wk_safe ** a_k, torch.zeros_like(Wk)
+                )
 
         return (prefactor * base) * self._inv_norm
+
+    # ------------------------------------------------------------------
+    # Definite / running (Volterra) integral along one axis
+    # ------------------------------------------------------------------
+
+    def definite_integral(
+        self,
+        x: torch.Tensor,
+        dim: int,
+        lower: float,
+        upper: Optional[float] = None,
+        cache: Optional[BasisCache] = None,
+    ) -> torch.Tensor:
+        """∫ φ_j d x_{dim} along one axis, in closed form, shape (M, N).
+
+        ``upper=None`` gives the **Volterra** (running) integral with variable upper
+        limit ``x[:, dim]``; a numeric ``upper`` gives the **definite** integral over
+        ``[lower, upper]`` along ``dim`` (the other coordinates are held at ``x``).
+
+        Unlike a standalone antiderivative, the ``1/W`` prefactor *cancels* in the
+        difference F(hi) − F(lo), so this is evaluated via the numerically stable
+        identity (exact, and finite even for near-DC features ``W_{dim,j} → 0``):
+
+            ∫_lo^hi sin(Z) d x_dim = Δ · sin((Z_hi+Z_lo)/2) · sinc(W_dim·Δ / 2π),
+
+        with Δ = hi − lo and ``torch.sinc(t) = sin(πt)/(πt)``.
+        """
+        if x.dtype != self.W.dtype or x.device != self.W.device:
+            x = x.to(dtype=self.W.dtype, device=self.W.device)
+
+        Wd = self.W[dim : dim + 1, :]  # (1, N)
+
+        x_lo = x.clone()
+        x_lo[:, dim] = lower
+        Z_lo = self.cache(x_lo).Z  # (M, N)
+
+        if upper is None:  # Volterra: upper limit is x_dim itself
+            Z_hi = cache.Z if cache is not None else self.cache(x).Z
+            t_hi = x[:, dim : dim + 1]  # (M, 1)
+        else:
+            x_hi = x.clone()
+            x_hi[:, dim] = upper
+            Z_hi = self.cache(x_hi).Z
+            t_hi = torch.full(
+                (x.shape[0], 1), float(upper), device=self.W.device, dtype=self.W.dtype
+            )
+
+        delta = t_hi - float(lower)  # (M, 1)
+        half_sum = 0.5 * (Z_hi + Z_lo)
+        sinc_arg = (Wd * delta) / (2.0 * np.pi)  # (M, N)
+        out = delta * torch.sin(half_sum) * torch.sinc(sinc_arg)
+        return out * self._inv_norm
 
     # ------------------------------------------------------------------
     # Convenience: 0th order (basis values)
@@ -408,10 +509,13 @@ class DiffOperator:
     # Arithmetic composition
     # ------------------------------------------------------------------
 
-    def __add__(self, other: DiffOperator) -> DiffOperator:
-        if not isinstance(other, DiffOperator):
-            return NotImplemented
-        return DiffOperator(self.terms + other.terms)
+    def __add__(self, other):
+        if isinstance(other, DiffOperator):
+            return DiffOperator(self.terms + other.terms)
+        if isinstance(other, (IntegralOperator, IntegroDifferentialOperator)):
+            # Mixing differential and integral terms -> integro-differential operator.
+            return IntegroDifferentialOperator([(1.0, self)]) + other
+        return NotImplemented
 
     def __sub__(self, other: DiffOperator) -> DiffOperator:
         return self + (-other)
@@ -467,6 +571,26 @@ class DiffOperator:
     def partial(cls, dim: int, order: int, d: int) -> DiffOperator:
         """∂^order / ∂x_{dim}^order."""
         alpha = tuple(order if k == dim else 0 for k in range(d))
+        return cls([(1.0, alpha)])
+
+    @classmethod
+    def antiderivative(cls, dim: int, order: int, d: int) -> DiffOperator:
+        """Indefinite ∫…∫ along axis ``dim`` (``order`` times) — the negative-order partial.
+
+        Built on the same cyclic identity as :meth:`partial`, run backwards:
+        ``∫ sin(w x + b) dx = −(1/w) cos(w x + b)`` is a derivative term with a *negative*
+        multi-index entry and a reciprocal prefactor 1/w.  Composes with derivative terms
+        (``+``, ``−``, scalar ``*``) into integro-differential operators, e.g.
+        ``Op.partial(0, 1, 1) - k * Op.antiderivative(0, 1, 1)``.
+
+        The arbitrary constant(s) of integration leave the sinusoidal family and are *not*
+        represented here; pin them with explicit low-order polynomial columns or a boundary
+        row.  For *definite* / running (Volterra) integrals with limits, see
+        :class:`IntegralOperator`.
+        """
+        if order < 1:
+            raise ValueError("antiderivative order must be a positive integer")
+        alpha = tuple(-order if k == dim else 0 for k in range(d))
         return cls([(1.0, alpha)])
 
     @classmethod
@@ -547,6 +671,197 @@ class DiffOperator:
                 idx = ",".join(str(ak) for ak in a)
                 parts.append(f"{c_str}*D({idx})")
         return "DiffOperator(" + " + ".join(parts) + ")"
+
+
+# ======================================================================
+# IntegralOperator: definite / running (Volterra) integrals with limits
+# ======================================================================
+
+class IntegralOperator:
+    """Definite or running (Volterra) integral along one axis, in closed form.
+
+    Unlike :meth:`DiffOperator.antiderivative` (indefinite, pointwise), these carry
+    integration *limits*, so they are a separate, limit-bearing operator:
+
+    >>> V = IntegralOperator.volterra(dim=0, lower=0.0, d=1)         # (Vu)(x)=∫_0^x u dt
+    >>> Iab = IntegralOperator.definite(dim=0, lower=0.0, upper=1.0, d=1)  # ∫_0^1 u dt
+
+    ``apply(basis, x)`` returns an (M, N) design matrix: for Volterra, the running
+    integral up to each ``x``; for a partial definite integral in d>1, the matrix
+    marginalised along ``dim`` (other coordinates held at ``x``).  Composes with
+    :class:`DiffOperator` via ``+ - *`` into an :class:`IntegroDifferentialOperator`,
+    so an integro-differential / integral equation is one linear-least-squares block:
+
+    >>> from fastlsq import Op
+    >>> L = Op.partial(0, 1, d=1) + IntegralOperator.volterra(dim=0, lower=0.0, d=1)
+    >>> A = L.apply(basis, x)        # u'(x) + ∫_0^x u dt, shape (M, N)
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        d: int,
+        lower: float,
+        upper: Optional[float] = None,
+        order: int = 1,
+    ):
+        if order < 1:
+            raise ValueError("integration order must be a positive integer")
+        self.dim = dim
+        self.d = d
+        self.lower = lower
+        self.upper = upper  # None => Volterra (variable upper limit x_dim)
+        self.order = order
+
+    # ------------------------------------------------------------------
+    # Factories
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def volterra(cls, dim: int, lower: float, d: int, order: int = 1) -> IntegralOperator:
+        """Running integral ∫_{lower}^{x_dim} · d x_dim (Volterra)."""
+        return cls(dim=dim, d=d, lower=lower, upper=None, order=order)
+
+    @classmethod
+    def definite(
+        cls, dim: int, lower: float, upper: float, d: int, order: int = 1
+    ) -> IntegralOperator:
+        """Definite integral ∫_{lower}^{upper} · d x_dim."""
+        return cls(dim=dim, d=d, lower=lower, upper=upper, order=order)
+
+    # ------------------------------------------------------------------
+    # Evaluation
+    # ------------------------------------------------------------------
+
+    def apply(
+        self,
+        basis: SinusoidalBasis,
+        x: torch.Tensor,
+        cache: Optional[BasisCache] = None,
+    ) -> torch.Tensor:
+        """Evaluate the integral operator on ``basis`` at points ``x`` -> (M, N)."""
+        if self.order == 1:
+            # Stable closed form (no 1/W division); handles near-DC features exactly.
+            return basis.definite_integral(
+                x, self.dim, self.lower, upper=self.upper, cache=cache
+            )
+        # order >= 2: difference of (DC-guarded) higher antiderivatives.
+        alpha = tuple(-self.order if k == self.dim else 0 for k in range(self.d))
+        F_lo = basis.derivative(self._shift(x, self.lower), alpha)
+        if self.upper is None:
+            F_hi = basis.derivative(x, alpha, cache=cache)
+        else:
+            F_hi = basis.derivative(self._shift(x, self.upper), alpha)
+        return F_hi - F_lo
+
+    def _shift(self, x: torch.Tensor, value: float) -> torch.Tensor:
+        """Copy of ``x`` with the integration axis pinned to ``value``."""
+        xs = x.clone()
+        xs[:, self.dim] = value
+        return xs
+
+    # ------------------------------------------------------------------
+    # Arithmetic composition -> IntegroDifferentialOperator
+    # ------------------------------------------------------------------
+
+    def __add__(self, other):
+        return IntegroDifferentialOperator([(1.0, self)]).__add__(other)
+
+    def __radd__(self, other):
+        return IntegroDifferentialOperator([(1.0, self)]).__radd__(other)
+
+    def __sub__(self, other):
+        return self.__add__(-other)
+
+    def __neg__(self):
+        return IntegroDifferentialOperator([(-1.0, self)])
+
+    def __mul__(self, scalar: CoeffT):
+        return IntegroDifferentialOperator([(scalar, self)])
+
+    __rmul__ = __mul__
+
+    def __repr__(self) -> str:
+        o = "" if self.order == 1 else f", order={self.order}"
+        if self.upper is None:
+            return f"IntegralOperator(∫_{self.lower}^x_{self.dim} d x_{self.dim}{o})"
+        return f"IntegralOperator(∫_{self.lower}^{self.upper} d x_{self.dim}{o})"
+
+
+# ======================================================================
+# IntegroDifferentialOperator: the common roof for differential + integral terms
+# ======================================================================
+
+class IntegroDifferentialOperator:
+    """Linear combination of heterogeneous operator terms, each evaluating to (M, N).
+
+    The unifying abstraction under which :class:`DiffOperator` (differential) and
+    :class:`IntegralOperator` (integral) terms compose into a single design matrix:
+
+    >>> from fastlsq import Op, IntegralOperator
+    >>> L = Op.partial(0, 1, d=1) + k * IntegralOperator.volterra(dim=0, lower=0.0, d=1)
+    >>> A = L.apply(basis, x)          # one linear-least-squares block, shape (M, N)
+
+    Terms are pairs ``(coeff, op)`` where ``op`` exposes ``.apply(basis, x, cache)`` and
+    ``coeff`` is a scalar **or** a learnable tensor (e.g. ``nn.Parameter``) — gradients flow
+    through integro-differential coefficients exactly as for :class:`DiffOperator`.
+    """
+
+    def __init__(self, terms):
+        self.terms = list(terms)
+
+    @staticmethod
+    def _as_terms(other):
+        if isinstance(other, IntegroDifferentialOperator):
+            return list(other.terms)
+        if isinstance(other, (DiffOperator, IntegralOperator)):
+            return [(1.0, other)]
+        return None
+
+    def apply(
+        self,
+        basis: SinusoidalBasis,
+        x: torch.Tensor,
+        cache: Optional[BasisCache] = None,
+    ) -> torch.Tensor:
+        """Evaluate Σ_i coeff_i · op_i(basis, x) -> (M, N), sharing one cache for x."""
+        if cache is None:
+            cache = basis.cache(x)
+        result = None
+        for coeff, op in self.terms:
+            M = op.apply(basis, x, cache=cache)
+            term = coeff * M
+            result = term if result is None else result + term
+        return result
+
+    def __add__(self, other):
+        wrapped = self._as_terms(other)
+        if wrapped is None:
+            return NotImplemented
+        return IntegroDifferentialOperator(self.terms + wrapped)
+
+    def __radd__(self, other):
+        wrapped = self._as_terms(other)
+        if wrapped is None:
+            return NotImplemented
+        return IntegroDifferentialOperator(wrapped + self.terms)
+
+    def __sub__(self, other):
+        return self.__add__(-other)
+
+    def __neg__(self):
+        return IntegroDifferentialOperator([(-c, op) for c, op in self.terms])
+
+    def __mul__(self, scalar: CoeffT):
+        return IntegroDifferentialOperator([(c * scalar, op) for c, op in self.terms])
+
+    __rmul__ = __mul__
+
+    def __repr__(self) -> str:
+        return "IntegroDifferentialOperator(" + " + ".join(
+            f"{c}*{op!r}" if not isinstance(c, torch.Tensor) else f"tensor*{op!r}"
+            for c, op in self.terms
+        ) + ")"
 
 
 # Shorthand alias

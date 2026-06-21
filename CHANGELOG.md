@@ -2,6 +2,34 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [0.3.0] - 2026-06-21
+
+### Added
+
+- **Exact closed-form integral & integro-differential operators.** The cyclic
+  derivative identity `D^α sin(W·x+b) = (∏ W^{α_k}) Φ_{|α| mod 4}` runs *backwards* --
+  integration is differentiation of *negative* order, `∫ sin(wx+b) dx = −(1/w)cos(wx+b)`.
+  `SinusoidalBasis.derivative` now accepts **signed** multi-indices (negative entries =
+  indefinite integration), with a DC guard (`dc_eps`) that zeros features whose frequency
+  along an integrated axis is ~0 (their primitive is a ramp that leaves the sinusoidal
+  family). `DiffOperator.antiderivative(dim, order, d)` exposes this as a factory, so
+  `Op.partial(0,1,1) - k*Op.antiderivative(0,1,1)` composes integro-differential operators.
+- **`IntegralOperator`** -- definite and running (Volterra) integrals with limits,
+  via the new `SinusoidalBasis.definite_integral`. Evaluated with a numerically stable
+  `sinc` identity (no `1/w` division), so the running integral of a near-DC feature is
+  exact rather than singular. Factories `IntegralOperator.volterra(...)` /
+  `IntegralOperator.definite(...)`.
+- **`IntegroDifferentialOperator`** -- the common roof under which differential and
+  integral terms compose (`+`, `−`, scalar/`nn.Parameter` `*`) into one `(M, N)`
+  linear-least-squares design matrix; coefficients stay differentiable so learnable
+  integral-term coefficients train through the solve. All three exported from `fastlsq`.
+- **Examples** `examples/integro_differential_demo.py` (one-shot forward solve of
+  `u'(x) + ∫_0^x u ds = f`, rel-L2 ~3e-11) and
+  `examples/inverse/inverse_memory_kernel.py` (recover an unknown memory strength λ from
+  noisy data via AdamW through the differentiable solve). New `tests/test_integral.py`
+  asserts ∫-then-∂ round-trips to identity, Volterra/definite match quadrature, the DC
+  guard stays finite, and gradients flow to learnable coefficients.
+
 ## [0.2.6] - 2026-06-09
 
 ### Changed

@@ -11,7 +11,15 @@ Reference:
 """
 
 from fastlsq.device import resolve_device, set_device, get_device, device_info
-from fastlsq.basis import SinusoidalBasis, BasisCache, DiffOperator, Op, FeatureBasis
+from fastlsq.basis import (
+    SinusoidalBasis,
+    BasisCache,
+    DiffOperator,
+    Op,
+    IntegralOperator,
+    IntegroDifferentialOperator,
+    FeatureBasis,
+)
 from fastlsq.solvers import FastLSQSolver, PIELMSolver
 from fastlsq.vector  import VectorBasis, VectorFastLSQSolver
 from fastlsq.linalg import solve_lstsq
@@ -44,7 +52,7 @@ from fastlsq.export import (
 )
 from fastlsq import viz
 
-__version__ = "0.2.6"
+__version__ = "0.3.0"
 __all__ = [
     # Device selection (CPU / CUDA / Apple-MPS, dtype-aware)
     "resolve_device",
@@ -56,6 +64,8 @@ __all__ = [
     "BasisCache",
     "DiffOperator",
     "Op",
+    "IntegralOperator",
+    "IntegroDifferentialOperator",
     "FeatureBasis",
     # Vector-valued basis  (0.1.5)
     "VectorBasis",
