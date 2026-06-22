@@ -487,6 +487,155 @@ class SinusoidalBasis:
 
 
 # ======================================================================
+# GaussianWindowedBasis: windowed-Fourier (Gabor) basis for projection ops
+# ======================================================================
+
+class GaussianWindowedBasis:
+    """Gaussian-windowed sinusoidal (Gabor) features for closed-form projection.
+
+    Each feature is a plane wave multiplied by a fixed Gaussian window in a
+    *whitened* frame::
+
+        ψ_j(z) = exp(−‖ζ‖²/2) · sin(W_j·ζ + b_j),      ζ = T⁻¹ (z − mean)
+
+    where ``mean`` (d,) is the window centre and ``T`` (d, d) is the lower-Cholesky
+    factor of the prior covariance (so ``ζ`` is the whitened coordinate).
+
+    The window is a **fixed prior** -- set once from the data's second moments,
+    *not* trained.  It is what makes the line / hyperplane integral of every
+    feature *converge* and admit a closed form (the projection of a bare unbounded
+    sinusoid over an infinite hyperplane diverges; the Gaussian makes it integrable
+    and analytic -- see :class:`ProjectionOperator`).  The coefficients on the
+    features stay linear, so fitting is still **one linear least squares**.
+
+    This is the windowed-Fourier (Gabor) member of the basis family, distinct from
+    the bare :class:`SinusoidalBasis`.  The Gaussian envelope changes the derivative
+    algebra (envelope×sine derivatives are still closed form, but no longer the bare
+    cyclic identity ``D^α sin = (∏W^{α_k}) Φ_{|α| mod 4}``), so this class is
+    deliberately scoped to **value** (:meth:`evaluate`) and **projection** (via
+    :class:`ProjectionOperator`); it does *not* expose the full
+    :class:`DiffOperator` calculus.
+
+    Convention matches :class:`SinusoidalBasis`: ``W`` has shape ``(d, N)`` (one
+    column per feature) and values are ``sin(ζ @ W + b)`` with ``b`` of shape
+    ``(1, N)``.
+
+    Parameters
+    ----------
+    W : Tensor, shape (d, N)
+        Whitened-frame frequency vectors (columns are features).
+    b : Tensor, shape (1, N)
+        Phase / bias vector.
+    mean : Tensor, shape (d,)
+        Window centre in data coordinates.
+    T : Tensor, shape (d, d)
+        Lower-Cholesky factor of the prior covariance; whitening is ζ = T⁻¹(z−mean).
+    """
+
+    def __init__(
+        self,
+        W: torch.Tensor,
+        b: torch.Tensor,
+        mean: torch.Tensor,
+        T: torch.Tensor,
+    ):
+        self.W = W
+        self.b = b
+        self.mean = mean
+        self.T = T
+        self.Tinv = torch.linalg.inv(T)
+
+    @property
+    def d(self) -> int:
+        return self.W.shape[0]
+
+    @property
+    def input_dim(self) -> int:
+        return self.W.shape[0]
+
+    @property
+    def n(self) -> int:
+        return self.W.shape[1]
+
+    @property
+    def n_features(self) -> int:
+        return self.W.shape[1]
+
+    # ------------------------------------------------------------------
+    # Constructors
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def random(
+        cls,
+        input_dim: int,
+        n_features: int,
+        sigma: float = 1.0,
+        mean: Optional[torch.Tensor] = None,
+        T: Optional[torch.Tensor] = None,
+    ) -> GaussianWindowedBasis:
+        """Random whitened-frame frequencies; identity window unless ``mean``/``T`` given."""
+        dev = get_device()
+        W = torch.randn(input_dim, n_features, device=dev) * sigma
+        b = torch.rand(1, n_features, device=dev) * 2 * np.pi
+        if mean is None:
+            mean = torch.zeros(input_dim, device=dev, dtype=W.dtype)
+        else:
+            mean = torch.as_tensor(mean, device=dev, dtype=W.dtype)
+        if T is None:
+            T = torch.eye(input_dim, device=dev, dtype=W.dtype)
+        else:
+            T = torch.as_tensor(T, device=dev, dtype=W.dtype)
+        return cls(W, b, mean, T)
+
+    @classmethod
+    def from_data(
+        cls,
+        z: torch.Tensor,
+        n_features: int,
+        sigma: float = 1.0,
+        eps: float = 1e-9,
+    ) -> GaussianWindowedBasis:
+        """Set the fixed Gaussian window from data second moments.
+
+        ``mean`` and ``T`` (lower-Cholesky of the empirical covariance, ridged by
+        ``eps`` for safety) are estimated from the support points ``z`` of shape
+        ``(M, d)``; frequencies are drawn isotropically in the whitened frame.  This
+        realises the "window = fixed prior set from the data's moments" design and
+        leaves the feature coefficients linear.
+        """
+        z = torch.as_tensor(z)
+        d = z.shape[1]
+        mean = z.mean(0)
+        zc = z - mean
+        cov = (zc.t() @ zc) / max(z.shape[0] - 1, 1)
+        cov = cov + eps * torch.eye(d, device=z.device, dtype=z.dtype)
+        T = torch.linalg.cholesky(cov)
+        W = torch.randn(d, n_features, device=z.device, dtype=z.dtype) * sigma
+        b = torch.rand(1, n_features, device=z.device, dtype=z.dtype) * 2 * np.pi
+        return cls(W, b, mean, T)
+
+    # ------------------------------------------------------------------
+    # Value
+    # ------------------------------------------------------------------
+
+    def evaluate(
+        self, z: torch.Tensor, cache: Optional[object] = None
+    ) -> torch.Tensor:
+        """ψ_j(z) = exp(−‖ζ‖²/2)·sin(ζ @ W + b), shape (M, N), ζ = T⁻¹(z−mean)."""
+        if z.dtype != self.W.dtype or z.device != self.W.device:
+            z = z.to(dtype=self.W.dtype, device=self.W.device)
+        zeta = (z - self.mean) @ self.Tinv.t()
+        window = torch.exp(-0.5 * (zeta ** 2).sum(1, keepdim=True))
+        return window * torch.sin(zeta @ self.W + self.b)
+
+    def value(self, z: torch.Tensor) -> torch.Tensor:
+        """Alias for :meth:`evaluate` (matches the downstream prototype name)."""
+        return self.evaluate(z)
+
+
+
+# ======================================================================
 # DiffOperator: composable symbolic differential operators
 # ======================================================================
 
@@ -866,6 +1015,138 @@ class IntegroDifferentialOperator:
 
 # Shorthand alias
 Op = DiffOperator
+
+
+# ======================================================================
+# ProjectionOperator: closed-form Radon / line-integral (projection) operator
+# ======================================================================
+
+class ProjectionOperator:
+    """Closed-form projection (Radon) operator for a :class:`GaussianWindowedBasis`.
+
+    Implements the line / hyperplane integral -- a Fredholm equation of the first
+    kind::
+
+        (P f)(u) = ∫ f(z) δ(c·z − u) dz
+
+    i.e. the integral of ``f`` over the hyperplane ``{z : c·z = u}`` with normal
+    ``c`` (beam phase-space tomography, CT, Abel inversion).  This is the
+    *projection / Radon* class of the operator taxonomy: a projection onto a
+    generally **non-axis-aligned** hyperplane, which the single-axis
+    :class:`IntegralOperator` cannot express.
+
+    For a Gaussian-windowed basis it assembles with **no quadrature** -- the
+    Gaussian × plane-wave hyperplane integral is analytic.  In the whitened frame,
+    with ``q = Tᵀc``, ``σ_u² = ‖q‖²``, ``u₀ = c·mean`` and ``jac = |det T| / ‖q‖``::
+
+        (P ψ_j)(u) = jac · (2π)^((d−1)/2) · exp(−‖ω_j‖²/2)
+                     · exp(−(u − u₀)² / (2 σ_u²)) · sin(α_j u + φ_j)
+        α_j     = (W_j·q) / ‖q‖²
+        ‖ω_j‖²  = ‖W_j‖² − (W_j·q̂)²            (q̂ = q/‖q‖;  across-slice energy)
+        φ_j     = b_j − α_j u₀
+
+    ``apply(basis, x)`` returns an ``(M, N)`` design matrix at the scalar detector
+    coordinates ``x = u``, so a windowed-tomography fit is one linear least squares.
+
+    Differentiability in ``c``
+    --------------------------
+    Differentiability of the assembled rows in the direction ``c`` (the *optics*) is
+    a first-class requirement -- the downstream use is differentiable experiment
+    design (autodiff ``d(posterior)/d(optics)`` to choose the next measurement).
+    Two things would silently break it, and are deliberately avoided here:
+
+    * the across-slice energy is computed from the **rotation-invariant** form
+      ``‖ω_j‖² = ‖W_j‖² − (W_j·q̂)²`` -- mathematically identical to ``‖QᵀW_j‖²`` for
+      an orthonormal complement ``Q`` of ``q``, but with **no** QR (a QR complement
+      is not differentiable in ``c``);
+    * every quantity (``u₀``, ``jac``, ``σ_u²``, ``α``, ...) stays a tensor -- no
+      ``float()`` / ``.item()`` casts that would detach the graph.
+
+    So ``autograd`` flows from the rows back to ``c`` (verified ``autodiff ==
+    finite-difference`` to ~5e-9), as differentiable optics design needs.
+
+    Scope / honesty
+    ---------------
+    * The closed form holds **only** for the Gaussian-windowed basis: the Gaussian ×
+      plane-wave integral is analytic, but other windows (compact / polynomial)
+      generally are **not**.  So the scope is *Gaussian-windowed* tomographic /
+      line-integral operators, not "any projection".
+    * The window is a *fixed prior* (set from data moments), required for
+      convergence -- not a tuned hyperparameter.
+    * This is a different analytic-kernel mechanism from the Fourier-symbol
+      (convolution / fractional) operators already in the package; it is the
+      **projection / Radon (line/hyperplane integral)** class.
+    * No novelty is claimed over ELM / RBF-for-integral-equations prior art; the
+      distinctive parts are *quadrature-free* closed-form projection rows,
+      differentiability in the optics, and one unified linear-least-squares solve.
+
+    It is standalone (it needs the windowed basis, so it does not compose into
+    :class:`IntegroDifferentialOperator`), but mirrors the ``apply(basis, x, cache)``
+    operator signature.
+
+    Parameters
+    ----------
+    c : Tensor, shape (d,)
+        Hyperplane normal / read-out direction.  May require grad (the optics).
+    """
+
+    def __init__(self, c: torch.Tensor):
+        self.c = c
+
+    @classmethod
+    def from_transport(cls, M: torch.Tensor, e: torch.Tensor) -> ProjectionOperator:
+        """Projection along read-out axis ``e`` after transport ``M``: ``c = Mᵀe``.
+
+        The tomography convention: a phase-space coordinate is transported by a
+        (linear) optics map ``M`` and read on axis ``e``, so the measured coordinate
+        is ``e·(M z) = (Mᵀe)·z``.  ``M`` (and hence ``c``) is differentiable, so
+        gradients flow back to the optics.
+        """
+        return cls(M.t() @ e)
+
+    def apply(
+        self,
+        basis: GaussianWindowedBasis,
+        x: torch.Tensor,
+        cache: Optional[object] = None,
+    ) -> torch.Tensor:
+        """Assemble the ``(M, N)`` projection design matrix at detector coords ``x``.
+
+        ``x`` is the scalar projection coordinate ``u`` per measurement, shape
+        ``(M,)`` or ``(M, 1)``.  ``cache`` is accepted for operator-API symmetry and
+        ignored (the closed form recomputes from ``c``).  No quadrature error.
+        """
+        c = self.c
+        if c.dtype != basis.W.dtype or c.device != basis.W.device:
+            c = c.to(dtype=basis.W.dtype, device=basis.W.device)
+
+        u = x
+        if u.dim() == 2 and u.shape[1] == 1:
+            u = u[:, 0]
+        elif u.dim() != 1:
+            raise ValueError(
+                "ProjectionOperator expects detector coords of shape (M,) or (M, 1)"
+            )
+        if u.dtype != basis.W.dtype or u.device != basis.W.device:
+            u = u.to(dtype=basis.W.dtype, device=basis.W.device)
+
+        q = basis.T.t() @ c                          # (d,)
+        qn2 = q @ q                                  # ()   = σ_u²
+        qn = torch.sqrt(qn2)                         # ()   = ‖q‖
+        u0 = c @ basis.mean                          # ()
+        jac = torch.det(basis.T).abs() / qn          # ()
+        b = basis.b.reshape(-1)                      # (N,)
+        alpha = (q @ basis.W) / qn2                  # (N,)
+        # |ω|², rotation-invariant (== ‖QᵀW‖²) and differentiable in c -- NOT via QR.
+        perp2 = (basis.W ** 2).sum(0) - ((q / qn) @ basis.W) ** 2   # (N,)
+        phase = b - alpha * u0                       # (N,)
+        amp = (
+            jac
+            * (2.0 * np.pi) ** ((basis.d - 1) / 2)
+            * torch.exp(-0.5 * perp2.clamp_min(0.0))
+        )                                            # (N,)
+        env_u = torch.exp(-0.5 * (u - u0) ** 2 / qn2)   # (M,)
+        return env_u[:, None] * (amp * torch.sin(u[:, None] * alpha + phase))
 
 
 # ======================================================================

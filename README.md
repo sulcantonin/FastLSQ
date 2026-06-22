@@ -237,6 +237,8 @@ derivative engine:
 | `SinusoidalBasis` | Evaluates basis functions and arbitrary-order derivatives in O(1) via the cyclic identity |
 | `BasisCache` | Pre-computes sin(Z)/cos(Z) once, reuses across multiple derivative evaluations |
 | `DiffOperator` / `Op` | Symbolic linear differential operators that compose via +, -, scalar *; coefficients can be `nn.Parameter` for learnable PDEs |
+| `IntegralOperator` / `IntegroDifferentialOperator` | Closed-form **single-axis** definite / running (Volterra) integrals; compose with `Op` into one integro-differential design matrix |
+| `GaussianWindowedBasis` / `ProjectionOperator` | Windowed-Fourier (Gabor) basis + closed-form **projection (Radon)** operator `∫ f δ(c·z−u) dz` for tomographic / line-integral inverse problems; quadrature-free and differentiable in the optics `c` |
 | `FeatureBasis` | Adapter for non-sinusoidal solvers (e.g. PIELM with tanh) |
 | `FastLSQSolver` | Manages feature blocks; exposes `.basis` for all derivative computations |
 | `LearnableFastLSQ` | Differentiable solver with learnable bandwidth via reparameterisation trick |
@@ -326,6 +328,7 @@ See `examples/add_your_own_pde.py` for the complete tutorial.
 
 - **Analytical derivative engine**: `SinusoidalBasis` computes arbitrary-order derivatives exactly in O(1) -- the foundation of the entire framework
 - **Symbolic PDE operators**: Compose differential operators with `Op` (Laplacian, wave, Helmholtz, biharmonic, custom) via intuitive arithmetic; coefficients can be `nn.Parameter` for AdamW optimisation
+- **Closed-form integral operators**: `IntegralOperator` (single-axis definite / Volterra integrals) composes with `Op` into one integro-differential least-squares block. The integral class now also includes the **projection (Radon) operator** (`ProjectionOperator` on a `GaussianWindowedBasis`) -- quadrature-free `∫ f δ(c·z−u) dz` line/hyperplane integrals for tomographic inverse problems, differentiable in the optics `c` for experiment design
 - **Vector-valued solutions**: First-class support for **u**: ℝᵈ → ℝᵏ (elasticity, Stokes, Maxwell). Problems declare `n_outputs = k`; `block_concat` assembles coupled block systems; `solver.predict(x)` returns shape `(M, k)`. Scalar problems are the `k=1` case
 - **High-level API**: Solve PDEs in one line with `solve_linear()` and `solve_nonlinear()`
 - **Robust linear solver**: Pluggable least-squares back-ends; the default `auto` routes Cholesky -> QR -> SVD, and backward-stable QR delivers SVD-grade accuracy at QR cost on the rank-deficient random-feature system

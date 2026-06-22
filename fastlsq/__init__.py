@@ -18,6 +18,8 @@ from fastlsq.basis import (
     Op,
     IntegralOperator,
     IntegroDifferentialOperator,
+    GaussianWindowedBasis,
+    ProjectionOperator,
     FeatureBasis,
 )
 from fastlsq.solvers import FastLSQSolver, PIELMSolver
@@ -52,7 +54,7 @@ from fastlsq.export import (
 )
 from fastlsq import viz
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     # Device selection (CPU / CUDA / Apple-MPS, dtype-aware)
     "resolve_device",
@@ -66,6 +68,8 @@ __all__ = [
     "Op",
     "IntegralOperator",
     "IntegroDifferentialOperator",
+    "GaussianWindowedBasis",
+    "ProjectionOperator",
     "FeatureBasis",
     # Vector-valued basis  (0.1.5)
     "VectorBasis",

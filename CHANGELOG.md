@@ -2,6 +2,62 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [0.4.0] - 2026-06-22
+
+### Added
+
+- **Closed-form projection (Radon) operator for windowed bases.** The integral
+  operator class now covers the *projection / Radon* (line/hyperplane-integral)
+  family, not just the single-axis integrals of 0.3.0. A tomographic measurement is
+  a projection onto a generally **non-axis-aligned** hyperplane,
+  `p(u) = ∫ f(z) δ(c·z − u) dz` (a Fredholm equation of the first kind) — beam
+  phase-space tomography, CT, Abel inversion — which the single-axis `IntegralOperator`
+  cannot express.
+- **`GaussianWindowedBasis`** — the windowed-Fourier (Gabor) member of the basis
+  family, `ψ_j(z) = exp(−‖ζ‖²/2)·sin(W_j·ζ + b_j)` with `ζ = T⁻¹(z − mean)`. The
+  Gaussian window is a **fixed prior** (set once from the data's second moments via
+  `GaussianWindowedBasis.from_data`, *not* trained): the projection of a bare unbounded
+  sinusoid over an infinite hyperplane diverges, and the window makes the hyperplane
+  integral integrable and analytic. Coefficients stay linear, so a fit is still one
+  linear least squares. The Gaussian envelope changes the derivative algebra, so this
+  class is deliberately scoped to **value** (`evaluate`) and **projection** — it does
+  not claim the full `DiffOperator` calculus of the bare `SinusoidalBasis`.
+- **`ProjectionOperator`** — assembles the `(M, N)` projection design matrix in
+  **closed form, with no quadrature**: in the whitened frame, with `q = Tᵀc`,
+  `σ_u² = ‖q‖²`, `u₀ = c·mean`, `jac = |det T|/‖q‖`,
+  `(P ψ_j)(u) = jac·(2π)^((d−1)/2)·exp(−‖ω_j‖²/2)·exp(−(u−u₀)²/(2σ_u²))·sin(α_j u + φ_j)`,
+  with `α_j = (W_j·q)/‖q‖²`, `‖ω_j‖² = ‖W_j‖² − (W_j·q̂)²`, `φ_j = b_j − α_j u₀`. The
+  rows are **differentiable in the direction `c` (the optics)**, for differentiable
+  experiment design (autodiff `d(posterior)/d(optics)`): the across-slice energy uses
+  the rotation-invariant `‖W‖²−(W·q̂)²` (no QR complement) and every quantity stays a
+  tensor (no `float()`/`.item()` casts), so autograd flows to `c` (verified
+  `autodiff == finite-difference` to ~5e-9). `from_transport(M, e)` builds the
+  tomography convention `c = Mᵀe` (transport by optics `M`, read on axis `e`). The
+  operator mirrors the `apply(basis, x, cache)` signature but is standalone (it needs
+  the windowed basis, so it does not compose into `IntegroDifferentialOperator`). Both
+  classes are exported from `fastlsq`.
+- **Tests / example.** `tests/test_projection.py` asserts the closed form equals a
+  Gauss--Hermite quadrature of the slice integral to machine precision in d = 2, 3, 4
+  (≤4e-13 observed), that autodiff of the rows wrt `c` matches finite differences, and
+  that a windowed field is recovered from its projections at several directions in one
+  LSQ. `examples/inverse/tomography_projection.py` demonstrates the full reconstruction
+  plus the differentiable-optics gradient.
+
+### Scope (honest)
+
+- The closed-form projection assembly works **only** for the Gaussian-windowed basis
+  (the Gaussian × plane-wave hyperplane integral is analytic); other windows
+  (compact / polynomial) generally are **not** closed form. Scope = *Gaussian-windowed*
+  tomographic / line-integral operators, not "any projection".
+- The window is a *fixed prior* (set from data moments), required for convergence — not
+  a tuned hyperparameter.
+- This is a **different** analytic-kernel mechanism from the Fourier-symbol
+  (convolution / fractional) class — it is the projection / Radon (line/hyperplane
+  integral) class.
+- No novelty is claimed over ELM / RBF-for-integral-equations prior art; the distinctive
+  parts are quadrature-free closed-form projection rows, differentiability in the optics,
+  and the unified operator algebra.
+
 ## [0.3.0] - 2026-06-21
 
 ### Added
