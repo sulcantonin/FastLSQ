@@ -105,16 +105,20 @@ def solve_linear(
     if n_bc is None:
         n_bc = max(800, n_pde // 5)
 
-    # Auto-select scale if needed
+    # Auto-select scale if needed (timed as its own phase: it is a search that can
+    # be amortised / skipped at deployment, so it must not inflate the solve time).
+    scale_search_s = 0.0
     if scale is None and auto_scale:
         if verbose:
             print("Auto-selecting optimal scale...")
+        t_phase = time.perf_counter()
         scale = auto_select_scale(
             problem, solver_class=FastLSQSolver,
             n_blocks=n_blocks, hidden_size=hidden_size,
             n_pde=n_pde, n_bc=n_bc, n_trials=auto_scale_trials,
             verbose=verbose,
         )
+        scale_search_s = time.perf_counter() - t_phase
         if verbose:
             print(f"Selected scale: {scale:.3f}")
 
@@ -137,10 +141,25 @@ def solve_linear(
         x_pde, bcs = data
         build_args = (bcs,)
 
-    # Assemble and solve
+    # Assemble (timed phase)
+    t_phase = time.perf_counter()
     A, b = problem.build(solver, x_pde, *build_args)
-    beta_raw = solve_lstsq(A, b, mu=mu, method=method)
+    assemble_s = time.perf_counter() - t_phase
+
+    # Solve (timed phase).  With metrics on, ``solve_lstsq`` hands back the
+    # device-synced solve time plus rank/residual/cond diagnostics directly; with
+    # metrics off, keep the plain fast solve and just time it externally.
     n_outputs = getattr(problem, "n_outputs", 1)
+    if return_metrics:
+        beta_raw, solve_info = solve_lstsq(
+            A, b, mu=mu, method=method, return_info=True
+        )
+        solve_s = solve_info["t_solve"]
+    else:
+        t_phase = time.perf_counter()
+        beta_raw = solve_lstsq(A, b, mu=mu, method=method)
+        solve_s = time.perf_counter() - t_phase
+        solve_info = None
     solver.beta = unpack_beta(beta_raw, solver.n_features, n_outputs)
 
     runtime = time.time() - t0
@@ -169,6 +188,15 @@ def solve_linear(
             "val_err": val_err,
             "grad_err": grad_err,
             "runtime": runtime,
+            # Phased breakdown: the conflated ``runtime`` split into its parts so
+            # the headline solve time is no longer dominated by the scale search.
+            "scale_search_s": scale_search_s,
+            "assemble_s": assemble_s,
+            "solve_s": solve_s,
+            # Rank-revealing solve diagnostics (the paper's central mechanism).
+            "rank_used": solve_info["rank_used"],
+            "residual": solve_info["residual"],
+            "cond_estimate": solve_info["cond_estimate"],
         }
         if verbose:
             print(f"Value error: {val_err:.2e}, Gradient error: {grad_err:.2e}")

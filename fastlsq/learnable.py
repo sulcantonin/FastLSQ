@@ -153,6 +153,20 @@ class LearnableFastLSQ(nn.Module):
         """
         return SinusoidalBasis(self._W(), self.b, normalize=self._normalize)
 
+    def freeze(self) -> SinusoidalBasis:
+        """Freeze the learned bandwidth into a plain, detached ``SinusoidalBasis``.
+
+        Unlike the :attr:`basis` property -- which reconstructs *with grad* on every
+        access -- this returns a fixed basis built from the current
+        ``W = L @ W_hat`` with the weights detached and cloned.  Run the (untimed)
+        bandwidth search, then ``freeze()`` the learned ``Sigma`` into this plain
+        basis for one clean, timed one-shot solve: the deployment artifact.
+        """
+        with torch.no_grad():
+            W = self._W().detach().clone()
+            b = self.b.detach().clone()
+        return SinusoidalBasis(W, b, normalize=self._normalize)
+
     # ------------------------------------------------------------------
     # Prediction
     # ------------------------------------------------------------------

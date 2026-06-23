@@ -197,6 +197,43 @@ class SinusoidalBasis:
         b = torch.rand(1, n_features, device=get_device()) * 2 * np.pi
         return cls(W, b, normalize=normalize, dc_eps=dc_eps)
 
+    @classmethod
+    def random_covariance(
+        cls,
+        input_dim: int,
+        n_features: int,
+        Sigma: Optional[Union[list, np.ndarray, torch.Tensor]] = None,
+        L: Optional[Union[list, np.ndarray, torch.Tensor]] = None,
+        normalize: bool = True,
+        dc_eps: float = 1e-8,
+    ) -> SinusoidalBasis:
+        """Create a basis with full-covariance Gaussian frequencies.
+
+        Frequencies are drawn ``W[:, j] ~ N(0, Sigma)`` via ``W = L @ W_hat`` with
+        ``W_hat ~ N(0, I_d)`` and ``Sigma = L L^T``.  Provide **exactly one** of
+        ``Sigma`` (the ``d x d`` covariance) or its lower-triangular Cholesky factor
+        ``L``.  This is the fixed full-``Sigma`` analogue of :meth:`random`
+        (isotropic) and :meth:`random_anisotropic` (axis-aligned), and uses the same
+        ``W = L @ W_hat`` reparameterisation as
+        :class:`~fastlsq.learnable.LearnableFastLSQ` -- so a swept covariance no
+        longer needs a hand-rolled ``chol(Sigma) @ randn``.
+        """
+        if (Sigma is None) == (L is None):
+            raise ValueError(
+                "random_covariance: provide exactly one of Sigma or L."
+            )
+        dev = get_device()
+        dt = torch.get_default_dtype()
+        if L is None:
+            Sigma_t = torch.as_tensor(Sigma, device=dev, dtype=dt)
+            L_t = torch.linalg.cholesky(Sigma_t)
+        else:
+            L_t = torch.as_tensor(L, device=dev, dtype=dt)
+        W_hat = torch.randn(input_dim, n_features, device=dev, dtype=L_t.dtype)
+        W = L_t @ W_hat
+        b = torch.rand(1, n_features, device=dev, dtype=L_t.dtype) * 2 * np.pi
+        return cls(W, b, normalize=normalize, dc_eps=dc_eps)
+
     # ------------------------------------------------------------------
     # Caching
     # ------------------------------------------------------------------

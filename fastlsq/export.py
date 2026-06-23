@@ -3,11 +3,39 @@
 
 """Export utilities for FastLSQ solutions (NumPy, VTK, etc.)."""
 
+import time
+
 import torch
 import numpy as np
 from typing import Optional, Union, Dict, Any
 
 from fastlsq.solvers import FastLSQSolver
+
+
+def _provenance(solver: FastLSQSolver) -> Dict[str, Any]:
+    """Auto-recorded provenance for a saved model: library version, device, dtype,
+    and the realized frequency bandwidth (scale / Sigma) the model actually uses."""
+    import fastlsq  # lazy: avoids a circular import at module load
+
+    prov: Dict[str, Any] = {
+        "fastlsq_version": getattr(fastlsq, "__version__", None),
+        "created": time.time(),
+        "input_dim": solver.input_dim,
+        "n_features": solver.n_features,
+    }
+    W = torch.cat(solver.W_list, dim=1) if solver.W_list else None
+    ref = W if W is not None else solver.beta
+    if ref is not None:
+        prov["device"] = str(ref.device)
+        prov["dtype"] = str(ref.dtype).replace("torch.", "")
+    if W is not None:
+        # Realized frequency second moment Sigma = (W Wᵀ)/N and per-axis scale.
+        freq_cov = (W @ W.transpose(-2, -1)) / W.shape[1]
+        prov["freq_cov"] = freq_cov.cpu().numpy()
+        prov["freq_std"] = torch.sqrt(
+            torch.diagonal(freq_cov).clamp_min(0.0)
+        ).cpu().numpy()
+    return prov
 
 
 def to_numpy(
@@ -138,11 +166,14 @@ def save_checkpoint(
     path : str
         File path (.pt or .pth extension recommended).
     metadata : dict, optional
-        Additional metadata to save.
+        Additional metadata to save.  A ``provenance`` block (library version,
+        device, dtype, timestamp, and realized scale / Sigma) is auto-recorded
+        unless the caller supplies its own ``provenance`` key.
     """
     state = to_dict(solver, include_weights=True, include_metadata=True)
-    if metadata:
-        state["metadata"] = metadata
+    meta = dict(metadata) if metadata else {}
+    meta.setdefault("provenance", _provenance(solver))
+    state["metadata"] = meta
     torch.save(state, path)
 
 

@@ -36,6 +36,7 @@ All back-ends are device/dtype-aware.  Apple-MPS lacks a robust ``svd``/``lstsq`
 so the factorization is run on CPU and the result moved back (one-time warning).
 """
 
+import time
 import warnings
 
 import torch
@@ -64,15 +65,18 @@ def _maybe_cpu(A, b):
 
 
 def _svd_solve(A, b, mu, rcond):
+    """Returns ``(x, S)`` where ``S`` is the singular values (descending) when an
+    explicit SVD is formed, else ``None`` (the fast LAPACK gelsd path)."""
     # Fast LAPACK rank-revealing driver for the common CPU / mu==0 case.
     if not mu and A.device.type == "cpu":
         try:
-            return torch.linalg.lstsq(A, b, rcond=rcond, driver="gelsd").solution
+            return torch.linalg.lstsq(A, b, rcond=rcond, driver="gelsd").solution, None
         except (RuntimeError, ValueError):
             pass  # fall through to the explicit SVD
     U, S, Vh = torch.linalg.svd(A, full_matrices=False)
     filt = torch.where(S > rcond * S[0], S / (S * S + mu), torch.zeros_like(S))
-    return Vh.transpose(-2, -1) @ (filt.unsqueeze(-1) * (U.transpose(-2, -1) @ b))
+    x = Vh.transpose(-2, -1) @ (filt.unsqueeze(-1) * (U.transpose(-2, -1) @ b))
+    return x, S
 
 
 def _cholesky_solve(A, b, mu):
@@ -99,7 +103,8 @@ def _rsvd_solve(A, b, mu, rcond, rank, oversample, n_iter):
     Ub, S, Vh = torch.linalg.svd(B, full_matrices=False)
     U = Q @ Ub                                     # (m, k)
     filt = torch.where(S > rcond * S[0], S / (S * S + mu), torch.zeros_like(S))
-    return Vh.transpose(-2, -1) @ (filt.unsqueeze(-1) * (U.transpose(-2, -1) @ b))
+    x = Vh.transpose(-2, -1) @ (filt.unsqueeze(-1) * (U.transpose(-2, -1) @ b))
+    return x, S                                    # S is the truncated (rank-k) spectrum
 
 
 def _qr_solve(A, b, mu):
@@ -116,13 +121,15 @@ def _qr_solve(A, b, mu):
 
 
 def _auto_solve(A, b, mu, rcond):
+    """Returns ``(x, S)``; ``S`` is the singular values only when the SVD safety
+    net is taken (the Cholesky / QR fast paths return ``None``)."""
     # Cheap conditioning probe: cond(A) ~ max/min Cholesky pivot.  If well within
     # float64's reach use the fast Cholesky.
     try:
         x, L = _cholesky_solve(A, b, mu)
         d = torch.diagonal(L).abs()
         if torch.isfinite(d).all() and d.min() > (rcond ** 0.25) * d.max():
-            return x
+            return x, None
     except torch.linalg.LinAlgError:
         pass
     # Ill-conditioned.  On CPU with no ridge the LAPACK gelsd driver is both
@@ -137,12 +144,43 @@ def _auto_solve(A, b, mu, rcond):
     x = _qr_solve(A, b, mu)
     nx = torch.linalg.vector_norm(x)
     if torch.isfinite(nx) and nx <= _QR_AUTO_NORM_GUARD * (1.0 + torch.linalg.vector_norm(b)):
-        return x
+        return x, None
     return _svd_solve(A, b, mu, rcond)
 
 
+def _dispatch(A, b, mu, rcond, method, rank, oversample, n_iter):
+    """Run the requested back-end; returns ``(x, S)`` where ``S`` is the singular
+    values when the back-end already computed an SVD, else ``None``."""
+    if method == "auto":
+        return _auto_solve(A, b, mu, rcond)
+    elif method == "svd":
+        return _svd_solve(A, b, mu, rcond)
+    elif method == "qr":
+        return _qr_solve(A, b, mu), None
+    elif method == "cholesky":
+        return _cholesky_solve(A, b, mu)[0], None
+    elif method == "rsvd":
+        return _rsvd_solve(A, b, mu, rcond, rank, oversample, n_iter)
+    else:
+        raise ValueError(f"Unknown method {method!r}; "
+                         "choose 'auto', 'qr', 'svd', 'cholesky', or 'rsvd'.")
+
+
+def _sync_device(device):
+    """Block until queued work on ``device`` finishes (no-op off CUDA/MPS).
+
+    Without this an async CUDA solve's wall-clock measures only kernel-launch
+    overhead, not compute -- the same primitive ``fastlsq.benchmark`` uses."""
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elif device.type == "mps":
+        sync = getattr(getattr(torch, "mps", None), "synchronize", None)
+        if sync is not None:
+            sync()
+
+
 def solve_lstsq(A, b, mu=0.0, rcond=1e-12, method="auto",
-                rank=None, oversample=10, n_iter=4):
+                rank=None, oversample=10, n_iter=4, *, return_info=False):
     """Solve  min ||A x - b||^2 + mu ||x||^2.
 
     Parameters
@@ -159,23 +197,50 @@ def solve_lstsq(A, b, mu=0.0, rcond=1e-12, method="auto",
     rank, oversample, n_iter : int
         Randomized-SVD parameters (``method="rsvd"`` only).  Set ``rank`` << N for
         the speed-up; ``None`` uses the full rank (correct but no acceleration).
+    return_info : bool, optional
+        If True, return ``(x, info)`` with a per-solve diagnostics dict
+        ``{"t_solve", "rank_used", "residual", "cond_estimate"}`` instead of just
+        ``x``.  ``t_solve`` is the device-synced wall-time of the **solve step
+        only** (not assembly or scale search); ``rank_used`` is the rank-revealing
+        effective numerical rank (singular values above ``rcond``); ``residual`` is
+        the data residual ``||A x - b||``; ``cond_estimate`` is ``s_max / s_min``
+        over the retained subspace.  The diagnostic singular values are computed
+        *outside* the timed region (one extra ``svdvals`` when the chosen back-end
+        did not already form an SVD), so ``t_solve`` stays honest.
 
     Returns
     -------
     x : Tensor, shape (N, K)
+    info : dict, only if ``return_info=True``
     """
     A2, b2, mps_dev = _maybe_cpu(A, b)
-    if method == "auto":
-        x = _auto_solve(A2, b2, mu, rcond)
-    elif method == "svd":
-        x = _svd_solve(A2, b2, mu, rcond)
-    elif method == "qr":
-        x = _qr_solve(A2, b2, mu)
-    elif method == "cholesky":
-        x = _cholesky_solve(A2, b2, mu)[0]
-    elif method == "rsvd":
-        x = _rsvd_solve(A2, b2, mu, rcond, rank, oversample, n_iter)
+
+    if not return_info:
+        x, _ = _dispatch(A2, b2, mu, rcond, method, rank, oversample, n_iter)
+        return x.to(mps_dev) if mps_dev is not None else x
+
+    _sync_device(A2.device)
+    t0 = time.perf_counter()
+    x, S = _dispatch(A2, b2, mu, rcond, method, rank, oversample, n_iter)
+    _sync_device(A2.device)
+    t_solve = time.perf_counter() - t0
+
+    # Diagnostics (untimed): reuse the back-end's spectrum, else one extra SVD.
+    if S is None:
+        S = torch.linalg.svdvals(A2)
+    smax = S[0]
+    keep = S > rcond * smax
+    rank_used = int(keep.sum().item())
+    if rank_used > 0:
+        cond_estimate = float((smax / S[keep][-1]).item())
     else:
-        raise ValueError(f"Unknown method {method!r}; "
-                         "choose 'auto', 'qr', 'svd', 'cholesky', or 'rsvd'.")
-    return x.to(mps_dev) if mps_dev is not None else x
+        cond_estimate = float("inf")
+    residual = float((A2 @ x - b2).norm().item())
+    info = {
+        "t_solve": t_solve,
+        "rank_used": rank_used,
+        "residual": residual,
+        "cond_estimate": cond_estimate,
+    }
+    x_out = x.to(mps_dev) if mps_dev is not None else x
+    return x_out, info

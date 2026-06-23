@@ -2,6 +2,35 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [0.4.1] - 2026-06-23
+
+### Added
+
+- **Solve-time diagnostics — `solve_lstsq(..., return_info=True)`.** Returns
+  `(x, info)` with `info = {t_solve, rank_used, residual, cond_estimate}`. `t_solve`
+  is the **device-synced wall-time of the solve step alone** (singular values for
+  the rank/cond diagnostics are computed *outside* the timed region), `rank_used` is
+  the rank-revealing effective numerical rank, and `cond_estimate` is `s_max/s_min`
+  over the retained subspace. The default `return_info=False` path is unchanged.
+- **Phased breakdown in `solve_linear` metrics.** `metrics` now reports
+  `scale_search_s`, `assemble_s`, `solve_s` (plus `rank_used`, `residual`,
+  `cond_estimate`) so the headline time is no longer dominated by the auto-scale
+  search — the reported solve time is a number the library hands you, not one a
+  benchmark reconstructs by hand.
+- **`fastlsq.benchmark.time_solve(fn, reps, warmup, device)`** — a device-correct
+  timing primitive (`synchronize` bracketing + warm-up + min-of-reps) returning the
+  reproducible solve-time *floor* in seconds (`return_all=True` for full stats). Also
+  exposes `fastlsq.benchmark.synchronize`.
+- **`SinusoidalBasis.random_covariance(d, N, Sigma=… | L=…)`** — fixed full-`Sigma`
+  constructor (`W = L @ W_hat`, `Sigma = L Lᵀ`), the symmetric counterpart to
+  `random` / `random_anisotropic`.
+- **`LearnableFastLSQ.freeze() -> SinusoidalBasis`** — freezes the learned bandwidth
+  into a plain, detached basis for one clean, timed one-shot deployment solve (the
+  `.basis` property still reconstructs-with-grad each access).
+- **Checkpoint provenance.** `save_checkpoint` auto-records a `provenance` block
+  (library version, device, dtype, timestamp, and the realized scale / `Sigma`) into
+  the metadata.
+
 ## [0.4.0] - 2026-06-22
 
 ### Added

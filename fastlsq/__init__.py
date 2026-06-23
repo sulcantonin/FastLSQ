@@ -53,8 +53,9 @@ from fastlsq.export import (
     load_checkpoint,
 )
 from fastlsq import viz
+from fastlsq import benchmark
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 __all__ = [
     # Device selection (CPU / CUDA / Apple-MPS, dtype-aware)
     "resolve_device",
