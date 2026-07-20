@@ -16,7 +16,9 @@ Key ideas
   triangular matrix (or a scalar multiple of the identity).
 * **Inner exact solve** -- for each L, the PDE matrix A(L) is assembled
   analytically via the cyclic derivative formula and beta*(L) = A(L)^+ b
-  is computed in one shot.  Gradients flow back through `torch.linalg.lstsq`.
+  is computed in one shot.  The outer loss differentiates through A(L) only:
+  beta* is optimal, so the envelope theorem makes its derivative drop out and
+  the gradient never touches the (numerically hopeless) lstsq backward.
 * **Learnable operator coefficients** -- Op accepts nn.Parameter in scalar
   multiplication, e.g. ``Op.laplacian(d=2) + k**2 * Op.identity(d=2)`` with
   ``k = nn.Parameter(...)``.  Build the operator inside forward() so it
@@ -192,16 +194,20 @@ class LearnableFastLSQ(nn.Module):
 
     def solve_inner(self, A: torch.Tensor, b: torch.Tensor, mu: float = 0.0,
                     rcond: float = 1e-12):
-        """Differentiable rank-revealing inner solve.
+        """Rank-revealing inner solve.
 
         Solves ``beta* = argmin ||A beta - b||^2 + mu ||beta||^2`` through the
         SVD-based ``gelsd`` least-squares driver with ``rcond`` truncation, so
-        gradients still flow back to ``L`` *and* the solve is stable when ``A``
-        is rank-deficient.  (The ``rcond`` cut suppresses the near-null space,
-        and ``gelsd``'s backward uses the stable pseudoinverse formula rather
-        than per-singular-vector derivatives -- which is what keeps the outer
-        AdamW loop's gradients finite.  A plain ``torch.linalg.lstsq`` *without*
-        ``rcond`` is what amplifies the null space.)
+        the solve stays stable when ``A`` is rank-deficient (the ``rcond`` cut
+        suppresses the near-null space that a plain ``torch.linalg.lstsq``
+        would amplify).
+
+        The returned ``beta`` carries a grad_fn, but **do not backpropagate
+        through it**: lstsq's backward needs ``(A^T A)^-1``, and random-feature
+        systems reach ``cond(A) ~ 1e11``, so the squared condition number
+        overruns float64 and the gradient comes back as noise.  Differentiate
+        the residual with ``beta`` detached instead -- that is exact, not an
+        approximation (see :func:`train_bandwidth`).
 
         For ``n_outputs > 1`` the system is block-stacked: the flat solution is
         kept as ``self._beta_flat`` (shape-compatible with ``A``) for residual
@@ -266,6 +272,41 @@ class LearnableFastLSQ(nn.Module):
 # Training loop
 # ======================================================================
 
+def residual_loss(learnable: LearnableFastLSQ, A: torch.Tensor,
+                  b_rhs: torch.Tensor) -> torch.Tensor:
+    """Outer loss ``mean((A beta* - b)^2)``, differentiable in the bandwidth.
+
+    ``beta*`` is **detached on purpose**.  It minimises the inner least-squares
+    problem, so the residual ``r = A beta* - b`` is orthogonal to ``range(A)``,
+    ``r^T A dbeta*/dL`` vanishes identically, and
+
+        dLoss/dL = 2 r^T (dA/dL beta* - db/dL)
+
+    is the *exact* total derivative with ``beta*`` held fixed (envelope /
+    Danskin theorem) -- not an approximation.
+
+    Differentiating through the inner solve instead is not merely redundant, it
+    is wrong here: ``torch.linalg.lstsq``'s backward needs ``(A^T A)^-1``, and
+    these random-feature systems run at ``cond(A) ~ 1e11``, so ``cond(A^T A) ~
+    1e22`` sits far past float64's ``~1e16``.  The gradient came back as
+    numerical noise -- wrong sign, ~1e7 relative error, and not reproducible
+    between runs -- which sent AdamW *up*hill and made ``fit()`` reliably worse
+    than its own isotropic starting point.  The forward solve is unaffected:
+    ``gelsd`` is rank-revealing and backward-stable.
+
+    Ridge caveat: with ``mu > 0`` the inner solve returns the *ridge* minimiser,
+    for which ``A^T r = -mu beta*``, so the identity above is off by exactly
+    ``mu d||beta*||^2/dL`` -- nil at the default ``mu = 0``, and negligible at
+    the small ridges used in practice (``mu ~ 1e-10``).  It vanishes outright if
+    the loss is taken to be the full inner objective ``||A beta - b||^2 + mu
+    ||beta||^2``, which is the quantity ``beta*`` actually minimises.
+
+    ``_beta_flat`` (not ``beta``) is used because it stays block-stacked and
+    shape-compatible with ``A`` when ``n_outputs > 1``.
+    """
+    return torch.mean((A @ learnable._beta_flat.detach() - b_rhs) ** 2)
+
+
 def train_bandwidth(
     learnable: LearnableFastLSQ,
     problem,
@@ -279,11 +320,12 @@ def train_bandwidth(
     clip_grad: float = 10.0,
     verbose: bool = True,
 ) -> list[dict]:
-    """Hybrid training: differentiable inner solve + outer AdamW on the bandwidth.
+    """Hybrid training: exact inner solve + outer AdamW on the bandwidth.
 
     At each step the PDE matrix ``A(L)`` is assembled, ``beta*(L)`` is solved by a
-    **rank-revealing** (truncated-SVD) inner solve, and the outer loss
-    ``||A beta* - b||^2`` is backpropagated to ``L``.  The loop is robust:
+    **rank-revealing** (truncated-SVD) inner solve, and :func:`residual_loss` is
+    backpropagated to ``L`` -- through ``A(L)`` only, since ``beta*`` is optimal
+    and the envelope theorem makes its derivative drop out.  The loop is robust:
     gradients are clipped, the best iterate is retained, and a failed inner SVD
     stops training gracefully.  Defaults (``mu=0``, ``lr=0.1``) match the
     validated diagonal/cholesky configuration.
@@ -316,9 +358,7 @@ def train_bandwidth(
             if verbose:
                 print(f"  Step {step:4d}: inner SVD failed -- stopping.")
             break
-        # _beta_flat is block-stacked and shape-compatible with A (for n_outputs>1);
-        # learnable.beta may be reshaped to (N, k), so the loss uses _beta_flat.
-        loss = torch.mean((A @ learnable._beta_flat - b_rhs) ** 2)
+        loss = residual_loss(learnable, A, b_rhs)
         if not torch.isfinite(loss):
             if verbose:
                 print(f"  Step {step:4d}: non-finite loss -- stopping.")
@@ -329,21 +369,27 @@ def train_bandwidth(
             if verbose:
                 print(f"  Step {step:4d}: non-finite gradient -- stopping.")
             break
-        if clip_grad:
-            torch.nn.utils.clip_grad_norm_(learnable.parameters(), clip_grad)
-        optimizer.step()
 
+        # Snapshot the iterate that *produced* this loss -- i.e. before the
+        # optimiser moves it.  Capturing after optimizer.step() stored L_{t+1}
+        # under loss(L_t), so a diverging run restored the step-after-best
+        # parameters instead of the best ones.
         l = loss.item()
         if l < best_loss:
             best_loss = l
             best_params = {n: p.detach().clone() for n, p in learnable.named_parameters()}
 
+        # ... and report the sigma that produced it, for the same reason.
         info = {"step": step, "loss": l, "sigma": learnable.sigma.item()}
         if learnable.mode == "cholesky":
             info["cov_diag"] = torch.diagonal(learnable.covariance).detach().cpu().tolist()
         history.append(info)
         if verbose and step % max(1, n_steps // 20) == 0:
             print(f"  Step {step:4d}: loss={l:.4e}  sigma={info['sigma']:.4f}")
+
+        if clip_grad:
+            torch.nn.utils.clip_grad_norm_(learnable.parameters(), clip_grad)
+        optimizer.step()
 
     # restore the best iterate and re-solve beta at it
     if best_params is not None:

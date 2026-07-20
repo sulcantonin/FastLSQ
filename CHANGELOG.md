@@ -2,6 +2,54 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [0.4.3] - 2026-07-20
+
+### Fixed
+
+- **Bandwidth training ran *uphill*.** `train_bandwidth` / `LearnableFastLSQ.fit`
+  backpropagated the outer residual through `torch.linalg.lstsq`, whose backward
+  goes through `(Aᵀ A)⁻¹`. Random-feature systems sit at `cond(A) ~ 1e11`, so
+  `cond(AᵀA) ~ 1e22` overruns float64 and the gradient came back as noise — wrong
+  sign, ~1e7 relative error, and different on every run. On the anisotropic Poisson
+  benchmark Σ moved the wrong way on *both* axes (`σx` 25→2.6 where the optimum is
+  37.7; `σy` 25→66 where the optimum is 3.14), the training loss climbed 8 orders of
+  magnitude, and `fit()` reliably returned a *worse* solution than its own isotropic
+  starting point. The outer loss now differentiates through `A(L)` only, with `beta*`
+  detached: since `beta*` minimises the inner problem, `r ⟂ range(A)` and the
+  `dbeta*/dL` term vanishes identically, so this is the **exact** gradient
+  (envelope / Danskin), not an approximation — and it is ~6x faster, since the
+  backward no longer traverses an SVD. Learned Σ now beats the fixed isotropic by
+  **600x–33000x** (rel. L2 `~2e-4` → `~5e-8`) across seeds, in both `diagonal` and
+  `cholesky` modes. The forward solve was never affected: `gelsd` is rank-revealing
+  and backward-stable.
+- **Best-iterate restore was off by one.** `train_bandwidth` snapshotted
+  `best_params` *after* `optimizer.step()`, storing `L_{t+1}` under `loss(L_t)`, so
+  the "best" iterate it restored was the step *after* the best one — which on a
+  diverging run is exactly the wrong parameter set. The history's `sigma` /
+  `cov_diag` were likewise one step ahead of the `loss` reported beside them. Both
+  are now captured before the optimiser moves.
+
+### Added
+
+- **`residual_loss(learnable, A, b)`** — the outer training objective, factored out
+  of `train_bandwidth` and exported, so the envelope-theorem gradient is testable
+  (and reusable) rather than inlined in the loop.
+- **Gradient regression test** — `test_bandwidth_gradient_matches_finite_differences`
+  checks the outer gradient against central differences in ~20 s, catching an uphill
+  optimiser directly instead of waiting on a 150-step end-to-end run. The two
+  `train_bandwidth` end-to-end tests passed throughout the regression: with a noise
+  gradient the loop degenerates into a random search that keeps a best iterate, and
+  on those draws it still stumbled into the required 10x win.
+
+### Changed
+
+- **`test_fit_beats_isotropic_solve` now requires a decisive margin** (10x) rather
+  than a bare `<`. The learned and isotropic errors are evaluated on *different*
+  test-point sets, so a bare `<` was within sampling noise of a tie; the measured
+  margin after the gradient fix is 600x–33000x. Its test points are now seeded —
+  previously they were drawn from whatever RNG state the preceding test left behind,
+  so the test was not reproducible when run standalone.
+
 ## [0.4.1] - 2026-06-23
 
 ### Added

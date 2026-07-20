@@ -28,7 +28,7 @@ from fastlsq.linalg import solve_lstsq
 from fastlsq.block import block_concat, pack_beta, unpack_beta
 from fastlsq.api import solve_linear, solve_nonlinear
 from fastlsq.tuning import auto_select_scale
-from fastlsq.learnable import LearnableFastLSQ, train_bandwidth
+from fastlsq.learnable import LearnableFastLSQ, train_bandwidth, residual_loss
 from fastlsq.plotting import (
     plot_solution_1d,
     plot_solution_2d_slice,
@@ -55,7 +55,7 @@ from fastlsq.export import (
 from fastlsq import viz
 from fastlsq import benchmark
 
-__version__ = "0.4.1"
+__version__ = "0.4.3"
 __all__ = [
     # Device selection (CPU / CUDA / Apple-MPS, dtype-aware)
     "resolve_device",
@@ -86,6 +86,7 @@ __all__ = [
     # Learnable bandwidth
     "LearnableFastLSQ",
     "train_bandwidth",
+    "residual_loss",
     # High-level API
     "solve_linear",
     "solve_nonlinear",
