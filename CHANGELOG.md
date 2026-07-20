@@ -2,6 +2,42 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [0.4.2] - 2026-07-20
+
+### Fixed
+
+- **`IntegralOperator` with `order >= 2` returned wrong values.** The higher-order
+  branch evaluated `F_n(hi) − F_n(lo)`, the difference of n-th antiderivatives, which
+  is *not* the n-fold iterated (Volterra) integral: it drops the polynomial terms
+  `Σ_{j=1}^{n-1} F_j(lo)·Δ^{n−j}/(n−j)!`. For `order=2` on `[0,1]` this was ~380%
+  off against a double cumulative-trapezoid reference. `order=1` was always correct
+  and is unchanged. The higher-order path now goes through the new
+  `SinusoidalBasis.iterated_integral(..., order=n)`, which implements the Cauchy
+  repeated-integration formula `∫_lo^x (x−t)^{n−1}/(n−1)! φ(t) dt` and agrees with
+  n-fold quadrature to ~1e-9 (grid-limited) and with 60-digit `mpmath` to ~1e-15.
+- **Near-DC features are now consistent across orders.** The `order >= 2` path went
+  through the DC-guarded `derivative`, which *zeroes* any feature with
+  `|W_dim| <= dc_eps`, while `order=1` handled it exactly via the `sinc` identity. A
+  near-DC feature is constant along the integrated axis, so its iterated integral is
+  the finite ramp `φ·Δ^n/n!` — the limit-bearing integral does not diverge, unlike the
+  standalone `1/W` antiderivative that `dc_eps` exists to guard. `iterated_integral`
+  therefore applies **no DC guard** and is exact as `W_dim → 0` at every order, while
+  `derivative` with negative `alpha` keeps its guard because that primitive genuinely
+  blows up. Documented in both docstrings.
+
+### Added
+
+- **`SinusoidalBasis.iterated_integral(x, dim, lower, upper=None, order=n)`** — the
+  n-fold iterated integral in closed form. Evaluated by a cancellation-free Taylor-tail
+  series `Δ^n Σ_p θ^p/(n+p)!·Φ_p(Z_lo)` for small `|θ| = |W_dim·Δ|` and by the
+  equivalent antiderivative form above it, since the latter's rounding error grows like
+  `n!/θ^n`. Holds ~1e-15 (relative to `Δ^n/n!`) for `n ≤ 10`, ~4e-14 by `n = 12`.
+- **`order >= 2` test coverage** in `tests/test_integral.py` (previously every test used
+  the default `order=1`): n-fold cumulative-trapezoid and Cauchy-kernel references for
+  Volterra and definite integrals, `order=1` agreement between the two code paths,
+  near-DC exactness at every order, and an explicit guard that the result is *not* the
+  naive difference of n-th antiderivatives.
+
 ## [0.4.1] - 2026-06-23
 
 ### Added

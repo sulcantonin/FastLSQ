@@ -237,7 +237,7 @@ derivative engine:
 | `SinusoidalBasis` | Evaluates basis functions and arbitrary-order derivatives in O(1) via the cyclic identity |
 | `BasisCache` | Pre-computes sin(Z)/cos(Z) once, reuses across multiple derivative evaluations |
 | `DiffOperator` / `Op` | Symbolic linear differential operators that compose via +, -, scalar *; coefficients can be `nn.Parameter` for learnable PDEs |
-| `IntegralOperator` / `IntegroDifferentialOperator` | Closed-form **single-axis** definite / running (Volterra) integrals; compose with `Op` into one integro-differential design matrix |
+| `IntegralOperator` / `IntegroDifferentialOperator` | Closed-form **single-axis** definite / running (Volterra) integrals, including `order=n` **iterated** integrals `∫_lo^x (x−t)^{n−1}/(n−1)! φ dt`; compose with `Op` into one integro-differential design matrix |
 | `GaussianWindowedBasis` / `ProjectionOperator` | Windowed-Fourier (Gabor) basis + closed-form **projection (Radon)** operator `∫ f δ(c·z−u) dz` for tomographic / line-integral inverse problems; quadrature-free and differentiable in the optics `c` |
 | `FeatureBasis` | Adapter for non-sinusoidal solvers (e.g. PIELM with tanh) |
 | `FastLSQSolver` | Manages feature blocks; exposes `.basis` for all derivative computations |

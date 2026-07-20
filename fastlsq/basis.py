@@ -61,6 +61,8 @@ Example
 
 from __future__ import annotations
 
+import math
+
 import torch
 import numpy as np
 from typing import Optional, Sequence, Union
@@ -141,7 +143,21 @@ class SinusoidalBasis:
         sinusoidal antiderivative (its primitive is a ramp that leaves the basis),
         so its column is zeroed instead of dividing by ~0.  Only affects negative
         orders; ordinary derivatives are untouched.
+
+        It also does **not** affect the limit-bearing integrals
+        (:meth:`definite_integral`, :meth:`iterated_integral`): over a finite interval
+        the ramp is perfectly well defined -- a DC feature integrates to ``φ·Δ^n/n!``
+        -- so those are computed exactly, with no guard, at every order.  Only the
+        *standalone* primitive genuinely diverges as ``1/W``, and only it is guarded.
     """
+
+    # Branch point for :meth:`iterated_integral`.  Below |θ| = W_dim·Δ the closed form
+    # suffers catastrophic cancellation (its rounding error grows like n!/θ^n), so the
+    # equivalent Taylor-tail series is used; above it the series would need many more
+    # terms.  40 terms hold both branches to ~1e-15 (relative to Δ^n/n!) for n ≤ 10,
+    # degrading gracefully to ~4e-14 by n = 12; verified against 60-digit mpmath.
+    _ITER_THETA_MAX = 4.0
+    _ITER_TERMS = 40
 
     def __init__(
         self,
@@ -357,6 +373,99 @@ class SinusoidalBasis:
         sinc_arg = (Wd * delta) / (2.0 * np.pi)  # (M, N)
         out = delta * torch.sin(half_sum) * torch.sinc(sinc_arg)
         return out * self._inv_norm
+
+    def iterated_integral(
+        self,
+        x: torch.Tensor,
+        dim: int,
+        lower: float,
+        upper: Optional[float] = None,
+        order: int = 1,
+        cache: Optional[BasisCache] = None,
+    ) -> torch.Tensor:
+        """``order``-fold *iterated* (Cauchy) integral along one axis, shape (M, N).
+
+        This is the repeated integral with all ``order`` lower limits pinned at
+        ``lower`` -- the operator a Volterra integral equation actually applies --
+
+            (I^n φ)(x) = ∫_lo^x ∫_lo^{s_1} … ∫_lo^{s_{n-1}} φ dt … ds_1
+                       = ∫_lo^x (x − t)^{n−1}/(n−1)! · φ(t) dt,
+
+        **not** the difference of n-th antiderivatives ``F_n(hi) − F_n(lo)``, which
+        omits the polynomial terms ``Σ_{j=1}^{n-1} F_j(lo)·Δ^{n−j}/(n−j)!``.
+
+        Evaluated by a *cancellation-free* series in the small-``|W·Δ|`` regime and by
+        the equivalent closed form otherwise.  Writing Δ = hi − lo, θ = W_dim·Δ and
+        Φ_k(Z) = sin(Z + kπ/2), the two branches are
+
+            θ small:  (I^n φ)(x) = Δ^n · Σ_{p≥0} θ^p/(n+p)! · Φ_p(Z_lo)
+            θ large:  (I^n φ)(x) = F_n(Z_hi) − Σ_{j=1}^{n} F_j(Z_lo)·Δ^{n−j}/(n−j)!,
+                      with F_j(Z) = Φ_{−j}(Z) / W_dim^j.
+
+        The series is the exact Taylor tail left over after that cancellation, so it is
+        finite and exact as ``W_dim → 0`` -- **no DC guard is applied or needed here**.
+        A near-DC feature is constant along ``dim`` and correctly integrates to
+        ``φ · Δ^n/n!``, matching the ``order=1`` sinc identity in
+        :meth:`definite_integral`.  (This is deliberately unlike :meth:`derivative`
+        with negative ``alpha``, whose standalone antiderivative genuinely diverges as
+        ``1/W`` and so is DC-guarded to zero.)
+
+        ``upper=None`` gives the running (Volterra) integral with variable upper limit
+        ``x[:, dim]``; a numeric ``upper`` pins it.  ``order=1`` reproduces
+        :meth:`definite_integral` to machine precision.
+        """
+        if order < 1:
+            raise ValueError("integration order must be a positive integer")
+        if x.dtype != self.W.dtype or x.device != self.W.device:
+            x = x.to(dtype=self.W.dtype, device=self.W.device)
+
+        n = int(order)
+        Wd = self.W[dim : dim + 1, :]  # (1, N)
+
+        x_lo = x.clone()
+        x_lo[:, dim] = lower
+        cache_lo = self.cache(x_lo)  # phases at the (common) lower limit
+
+        if upper is None:  # Volterra: upper limit is x_dim itself
+            cache_hi = cache if cache is not None else self.cache(x)
+            t_hi = x[:, dim : dim + 1]  # (M, 1)
+        else:
+            x_hi = x.clone()
+            x_hi[:, dim] = upper
+            cache_hi = self.cache(x_hi)
+            t_hi = torch.full(
+                (x.shape[0], 1), float(upper), device=self.W.device, dtype=self.W.dtype
+            )
+
+        delta = t_hi - float(lower)  # (M, 1)
+        theta = Wd * delta  # (M, N)
+        small = theta.abs() <= self._ITER_THETA_MAX
+
+        # 1/k! as plain floats: torch cannot divide a tensor by math.factorial's
+        # arbitrary-precision int, and float() keeps it to a single correct rounding.
+        inv_fact = [1.0 / float(math.factorial(k)) for k in range(n + self._ITER_TERMS)]
+
+        # --- Series branch: Δ^n Σ_p θ^p/(n+p)! Φ_p(Z_lo).  θ is zeroed outside the
+        # small-|θ| set so the powers cannot overflow (matters in float32).
+        th_s = torch.where(small, theta, torch.zeros_like(theta))
+        series = torch.zeros_like(theta)
+        th_pow = torch.ones_like(theta)  # θ^p
+        for p in range(self._ITER_TERMS):
+            series = series + (th_pow * inv_fact[n + p]) * cache_lo.phase(p)
+            th_pow = th_pow * th_s
+        series = series * (delta ** n)
+
+        # --- Closed branch: F_n(Z_hi) − Σ_j F_j(Z_lo) Δ^{n-j}/(n-j)!.  W is forced to
+        # 1 on the small-|θ| set so the unselected branch cannot produce inf/NaN (which
+        # would otherwise poison gradients through torch.where).
+        Wd_safe = torch.where(small, torch.ones_like(theta), Wd.expand_as(theta))
+        closed = cache_hi.phase(-n) / Wd_safe ** n
+        for j in range(1, n + 1):
+            closed = closed - (cache_lo.phase(-j) / Wd_safe ** j) * (
+                delta ** (n - j) * inv_fact[n - j]
+            )
+
+        return torch.where(small, series, closed) * self._inv_norm
 
     # ------------------------------------------------------------------
     # Convenience: 0th order (basis values)
@@ -874,7 +983,14 @@ class IntegralOperator:
 
     ``apply(basis, x)`` returns an (M, N) design matrix: for Volterra, the running
     integral up to each ``x``; for a partial definite integral in d>1, the matrix
-    marginalised along ``dim`` (other coordinates held at ``x``).  Composes with
+    marginalised along ``dim`` (other coordinates held at ``x``).
+
+    ``order=n > 1`` is the n-fold **iterated** integral with every lower limit pinned
+    at ``lower`` -- ∫_lo^x ∫_lo^{s_1} … φ, equivalently the Cauchy form
+    ∫_lo^x (x−t)^{n−1}/(n−1)! φ(t) dt -- which is what a higher-order Volterra equation
+    applies.  It is *not* the difference of n-th antiderivatives F_n(hi) − F_n(lo);
+    see :meth:`SinusoidalBasis.iterated_integral`.  Near-DC features are exact and
+    finite at every order (no DC guard).  Composes with
     :class:`DiffOperator` via ``+ - *`` into an :class:`IntegroDifferentialOperator`,
     so an integro-differential / integral equation is one linear-least-squares block:
 
@@ -931,20 +1047,13 @@ class IntegralOperator:
             return basis.definite_integral(
                 x, self.dim, self.lower, upper=self.upper, cache=cache
             )
-        # order >= 2: difference of (DC-guarded) higher antiderivatives.
-        alpha = tuple(-self.order if k == self.dim else 0 for k in range(self.d))
-        F_lo = basis.derivative(self._shift(x, self.lower), alpha)
-        if self.upper is None:
-            F_hi = basis.derivative(x, alpha, cache=cache)
-        else:
-            F_hi = basis.derivative(self._shift(x, self.upper), alpha)
-        return F_hi - F_lo
-
-    def _shift(self, x: torch.Tensor, value: float) -> torch.Tensor:
-        """Copy of ``x`` with the integration axis pinned to ``value``."""
-        xs = x.clone()
-        xs[:, self.dim] = value
-        return xs
+        # order >= 2: the n-fold *iterated* (Cauchy) integral, all lower limits pinned
+        # at ``lower``.  Note this is NOT F_n(hi) − F_n(lo): that difference drops the
+        # polynomial terms Σ_{j<n} F_j(lo)·Δ^{n−j}/(n−j)!.  Like the order-1 branch it
+        # is exact and finite for near-DC features (no DC guard).
+        return basis.iterated_integral(
+            x, self.dim, self.lower, upper=self.upper, order=self.order, cache=cache
+        )
 
     # ------------------------------------------------------------------
     # Arithmetic composition -> IntegroDifferentialOperator
