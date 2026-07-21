@@ -96,6 +96,17 @@ collocation points), against their closed-form solutions:
 Approaching the kernel's singular value `λ = 3` costs only ~2 orders of
 magnitude: 5.5e-14 at `λ = 0.5`, 6.8e-13 at `λ = 2.9`, 3.9e-12 at `λ = 2.99`.
 
+### Documentation
+
+- The README now tables the SDF primitives (`sdf_ball`, `sdf_disk`, `sdf_box`,
+  `sdf_annulus`, `sdf_lshape`, `sdf_flower`, `sdf_polygon`, `sdf_tokamak`) and
+  the CSG combinators (`sdf_union`, `sdf_intersection`, `sdf_difference`,
+  `sdf_complement`) by name. They were exported in `__all__` from 0.5.0 but only
+  described in prose, so the composable `ψ`-level API was effectively
+  undiscoverable — you could find `SDFDomain.disk()` but not `sdf_disk`, and the
+  CSG functions not at all.
+- `PolynomialColumns` is likewise named explicitly alongside `AugmentedBasis`.
+
 ### Changed
 
 - **Operator composition is now duck-typed.** `IntegroDifferentialOperator._as_terms`

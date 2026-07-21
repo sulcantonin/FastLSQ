@@ -213,6 +213,33 @@ B   = dom.neumann_rows(basis, xb)         # (M, N) block for ∂u/∂n = g
 plate = SDFDomain.disk(1.0) - SDFDomain.disk(0.2, center=(0.4, 0.0))
 ```
 
+Built-in domains, as `SDFDomain` constructors or as bare `ψ` callables:
+
+| Domain | `SDFDomain` | Bare `ψ` | Why it's there |
+|---|---|---|---|
+| Ball / disk | `.ball()`, `.disk()` | `sdf_ball`, `sdf_disk` | Exact SDF, any dimension; the §2.7 unit disk |
+| Axis-aligned box | `.box(lo, hi)` | `sdf_box` | Exact inside and out; the CSG building block |
+| Annulus / shell | `.annulus(r_in, r_out)` | `sdf_annulus` | **Multiply-connected** — an interior boundary whose outward normal points toward the centre |
+| L-shape | `.lshape(size, cut)` | `sdf_lshape` | **Reentrant corner**, the standard non-convex stress case (`r^{2/3}` solution singularity) |
+| Flower | `.flower(R, a, k)` | `sdf_flower` | Smooth non-convex, and deliberately **not** a distance function (`‖∇ψ‖` spans 1–10) — the case that separates a correct projection from a naive one |
+| Polygon | — | `sdf_polygon(verts)` | Exact for any simple polygon; the escape hatch for a cross-section known only as a curve (measured, CAD, traced) |
+| Tokamak | `.tokamak()` | `sdf_tokamak` | D-shaped Miller poloidal cross-section, via `sdf_polygon` |
+
+Any `ψ` of your own works too — it only has to be negative inside. Combine them
+with the CSG helpers, which are also available as plain functions:
+
+| Set operation | Operator | Function |
+|---|---|---|
+| Union `A ∪ B` | `A \| B` | `sdf_union(a, b)` |
+| Intersection `A ∩ B` | `A & B` | `sdf_intersection(a, b)` |
+| Difference `A \ B` | `A - B` | `sdf_difference(a, b)` |
+| Complement | — | `sdf_complement(a)` |
+
+CSG results are valid implicit functions (correct sign everywhere) but not
+generally exact distance functions — `min`/`max` of two exact SDFs over- or
+under-estimates distance near the seam. Nothing here depends on exactness:
+sampling uses only the sign, and `project_to_boundary` normalises by `‖∇ψ‖²`.
+
 ### Vector-valued solutions
 
 `solve_linear` / `solve_nonlinear` support vector-valued **u**: ℝᵈ → ℝᵏ for
