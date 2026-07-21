@@ -118,6 +118,128 @@ A_pde = helmholtz.apply(basis, x)    # (5000, 1500)
 wave = Op.partial(dim=2, order=2, d=3) - c**2 * Op.laplacian(d=3, dims=[0, 1])
 ```
 
+### Nonlocal operators (fractional Laplacian, convolution)
+
+Every feature is a plane wave, so a Fourier multiplier `m(ξ)` acts **diagonally**
+on the basis -- assembling it is a per-column rescale, exact, with no quadrature
+and no discretisation of the (singular, nonlocal) kernel:
+
+```python
+from fastlsq.basis import SinusoidalBasis, SymbolOperator, Op
+
+basis = SinusoidalBasis.random(input_dim=2, n_features=1500, sigma=5.0)
+
+frac = SymbolOperator.fractional_laplacian(s=0.75)   # (−Δ)^0.75
+A    = frac.apply(basis, x)                          # (M, 1500), one rescale
+
+# Mixes freely with differential terms
+L = SymbolOperator.fractional_laplacian(0.5) + 3.0 * Op.identity(d=2)
+
+# Convolution from the kernel's transform; s may be an nn.Parameter, so the
+# fractional order itself can be recovered by gradient descent.
+K = SymbolOperator.convolution(lambda W: torch.exp(-(W**2).sum(0, keepdim=True) / 12))
+```
+
+`s=1` reproduces `−Δ` bit-exactly. Note this is the **whole-space (restricted)**
+`(−Δ)^s`, not the spectral variant defined on a bounded domain -- the two differ
+once the domain is bounded.
+
+### Integral equations (Fredholm, Volterra, separable kernels)
+
+A separable kernel `K(x,y) = Σ g_m(x) h_m(y)` collapses the integral operator to
+`Σ_m g_m(x) ∫ h_m u`, so acting on the basis needs only an `R × N` matrix of
+inner products, computed once. A Fredholm equation of the second kind is then
+one linear least squares like everything else:
+
+```python
+from fastlsq import SeparableKernelOperator, fredholm_second_kind, degenerate_eigenvalues
+
+# u(x) − λ ∫₀¹ x y u(y) dy = f(x)
+K = SeparableKernelOperator([lambda x: x[:, 0]],      # g_m
+                            [lambda y: y[:, 0]],      # h_m
+                            lower=0.0, upper=1.0, d=1)
+
+print(degenerate_eigenvalues(K, basis))    # λ where the equation is singular → 3.0
+print(K.check_quadrature(basis))           # are the inner products resolved?
+
+L = fredholm_second_kind(K, lam=0.5, d=1)
+beta = solve_lstsq(L.apply(basis, x), f(x))
+```
+
+Second-kind equations need **no boundary rows** — the identity term makes them
+well posed on its own. Integration over several axes at once (definite, running,
+or mixed) is `MultiIntegralOperator`:
+
+```python
+from fastlsq import MultiIntegralOperator
+
+area = MultiIntegralOperator.definite([0, 1], [0, 0], [1, 1], d=2)   # ∫∫ over a box
+memory = MultiIntegralOperator([0, 1], [0.0, 0.0], d=2, uppers=[1.0, None])  # definite × running
+```
+
+Ready-made problems with closed-form solutions live in `fastlsq.problems` and run
+through `solve_linear` like the PDEs (`PYTHONPATH=. python3
+examples/integral_equations.py`, 300 features, 2000 collocation points):
+
+| Problem | rel L2 | grad rel L2 | boundary rows |
+|---|---|---|---|
+| `FredholmProductKernel(lam=0.5)` | 5.5e-14 | 5.7e-12 | 0 |
+| `FredholmProductKernel(lam=2.0)` | 3.8e-13 | 3.9e-11 | 0 |
+| `FredholmRank2Kernel(lam=0.4)` | 9.1e-14 | 9.5e-12 | 0 |
+| `VolterraSecondKind(lam=1.5)` | 8.8e-13 | 1.0e-10 | 0 |
+| `IntegroDifferentialODE(lam=4.0)` | 6.2e-16 | 1.7e-14 | 1 |
+
+Errors are against the **closed-form** solutions (degenerate-kernel theory for
+the Fredholm cases, the equivalent ODE for the Volterra ones), not a reference
+quadrature. Accuracy degrades gracefully toward the kernel's singular value --
+for `K = xy`, whose only characteristic value is `λ = 3`, the error moves from
+5.5e-14 at `λ = 0.5` to 3.9e-12 at `λ = 2.99`.
+
+### Complex geometry without a mesh
+
+A domain is any callable that is negative inside. Interior points come from
+rejection sampling, boundary points from projection onto `ψ = 0`, and outward
+normals from `∇ψ/‖∇ψ‖` -- which is exactly what Neumann and Robin conditions need:
+
+```python
+from fastlsq.geometry import SDFDomain
+
+dom = SDFDomain.annulus(0.3, 1.0)         # or .disk() .lshape() .flower() .tokamak()
+x   = dom.sample(4000)                    # interior collocation
+xb  = dom.sample_boundary(600)            # boundary collocation
+B   = dom.neumann_rows(basis, xb)         # (M, N) block for ∂u/∂n = g
+
+# Non-convex and multiply-connected domains are built, not meshed
+plate = SDFDomain.disk(1.0) - SDFDomain.disk(0.2, center=(0.4, 0.0))
+```
+
+Built-in domains, as `SDFDomain` constructors or as bare `ψ` callables:
+
+| Domain | `SDFDomain` | Bare `ψ` | Why it's there |
+|---|---|---|---|
+| Ball / disk | `.ball()`, `.disk()` | `sdf_ball`, `sdf_disk` | Exact SDF, any dimension; the §2.7 unit disk |
+| Axis-aligned box | `.box(lo, hi)` | `sdf_box` | Exact inside and out; the CSG building block |
+| Annulus / shell | `.annulus(r_in, r_out)` | `sdf_annulus` | **Multiply-connected** — an interior boundary whose outward normal points toward the centre |
+| L-shape | `.lshape(size, cut)` | `sdf_lshape` | **Reentrant corner**, the standard non-convex stress case (`r^{2/3}` solution singularity) |
+| Flower | `.flower(R, a, k)` | `sdf_flower` | Smooth non-convex, and deliberately **not** a distance function (`‖∇ψ‖` spans 1–10) — the case that separates a correct projection from a naive one |
+| Polygon | — | `sdf_polygon(verts)` | Exact for any simple polygon; the escape hatch for a cross-section known only as a curve (measured, CAD, traced) |
+| Tokamak | `.tokamak()` | `sdf_tokamak` | D-shaped Miller poloidal cross-section, via `sdf_polygon` |
+
+Any `ψ` of your own works too — it only has to be negative inside. Combine them
+with the CSG helpers, which are also available as plain functions:
+
+| Set operation | Operator | Function |
+|---|---|---|
+| Union `A ∪ B` | `A \| B` | `sdf_union(a, b)` |
+| Intersection `A ∩ B` | `A & B` | `sdf_intersection(a, b)` |
+| Difference `A \ B` | `A - B` | `sdf_difference(a, b)` |
+| Complement | — | `sdf_complement(a)` |
+
+CSG results are valid implicit functions (correct sign everywhere) but not
+generally exact distance functions — `min`/`max` of two exact SDFs over- or
+under-estimates distance near the seam. Nothing here depends on exactness:
+sampling uses only the sign, and `project_to_boundary` normalises by `‖∇ψ‖²`.
+
 ### Vector-valued solutions
 
 `solve_linear` / `solve_nonlinear` support vector-valued **u**: ℝᵈ → ℝᵏ for
@@ -238,7 +360,12 @@ derivative engine:
 | `BasisCache` | Pre-computes sin(Z)/cos(Z) once, reuses across multiple derivative evaluations |
 | `DiffOperator` / `Op` | Symbolic linear differential operators that compose via +, -, scalar *; coefficients can be `nn.Parameter` for learnable PDEs |
 | `IntegralOperator` / `IntegroDifferentialOperator` | Closed-form **single-axis** definite / running (Volterra) integrals, including `order=n` **iterated** integrals `∫_lo^x (x−t)^{n−1}/(n−1)! φ dt`; compose with `Op` into one integro-differential design matrix |
+| `MultiIntegralOperator` | Closed-form integration over **several axes at once**, each independently definite or Volterra -- area/volume functionals and mixed "definite in space, running in time" memory terms. The plane wave factorises over axes, so it is a product of the same stable one-axis factors |
+| `SeparableKernelOperator` | Separable (degenerate) kernels `K(x,y) = Σ g_m(x) h_m(y)`, assembled as a rank-`R` product `G @ C` with the inner products `C` precomputed once. With `fredholm_second_kind` this makes `u − λ∫K u = f` one linear least squares |
+| `SymbolOperator` | **Fourier-multiplier (nonlocal)** operators `L e^{iξ·x} = m(ξ) e^{iξ·x}`. Features *are* plane waves, so the symbol acts diagonally -- a per-column rescale, exact, no quadrature. Ships `fractional_laplacian(s)` (with learnable `s`), `riesz_potential`, `riesz_transform`, `convolution(k̂)` |
 | `GaussianWindowedBasis` / `ProjectionOperator` | Windowed-Fourier (Gabor) basis + closed-form **projection (Radon)** operator `∫ f δ(c·z−u) dz` for tomographic / line-integral inverse problems; quadrature-free and differentiable in the optics `c` |
+| `AugmentedBasis` / `PolynomialColumns` | Widens a basis with explicit `1, x, x², …` columns carrying **exact** operator images, to pin integration constants and DC modes that leave the sinusoidal family. Transparent to every operator |
+| `SDFDomain` + `sample_sdf` / `project_to_boundary` / `outward_normal` | **Membership-oracle geometry**: give any `ψ(x)` negative inside and get interior points, boundary points and outward normals -- no mesh. CSG composition via `\|`, `&`, `-`; built-ins include disk, annulus, L-shape, flower, polygon and a tokamak cross-section |
 | `FeatureBasis` | Adapter for non-sinusoidal solvers (e.g. PIELM with tanh) |
 | `FastLSQSolver` | Manages feature blocks; exposes `.basis` for all derivative computations |
 | `LearnableFastLSQ` | Differentiable solver with learnable bandwidth via reparameterisation trick |
@@ -329,7 +456,10 @@ See `examples/add_your_own_pde.py` for the complete tutorial.
 - **Analytical derivative engine**: `SinusoidalBasis` computes arbitrary-order derivatives exactly in O(1) -- the foundation of the entire framework
 - **Symbolic PDE operators**: Compose differential operators with `Op` (Laplacian, wave, Helmholtz, biharmonic, custom) via intuitive arithmetic; coefficients can be `nn.Parameter` for AdamW optimisation
 - **Closed-form integral operators**: `IntegralOperator` (single-axis definite / Volterra integrals) composes with `Op` into one integro-differential least-squares block. The integral class now also includes the **projection (Radon) operator** (`ProjectionOperator` on a `GaussianWindowedBasis`) -- quadrature-free `∫ f δ(c·z−u) dz` line/hyperplane integrals for tomographic inverse problems, differentiable in the optics `c` for experiment design
+- **Integral equations**: Separable (degenerate) kernels `K = Σ g_m(x) h_m(y)` assemble as a rank-`R` product with inner products precomputed once, so a Fredholm equation of the second kind `u − λ∫K u = f` is a single linear least squares needing **no boundary rows**. `degenerate_eigenvalues` reports the `λ` at which the equation is singular and `check_quadrature` whether the inner products are resolved -- both otherwise-silent failure modes. `MultiIntegralOperator` integrates over several axes at once, each independently definite or Volterra
+- **Nonlocal / Fourier-symbol operators**: `SymbolOperator` assembles any multiplier `m(ξ)` as a per-column rescale -- exact, quadrature-free, and the same cost as the Laplacian. Covers the **fractional Laplacian** `(−Δ)^s` (with a *learnable* order `s`), Riesz potentials and transforms, and **convolution** `k * u` from the kernel transform `k̂`. Operators whose kernels are singular and nonlocal -- dense, ill-conditioned matrices for FEM/FD -- are diagonal here
 - **Vector-valued solutions**: First-class support for **u**: ℝᵈ → ℝᵏ (elasticity, Stokes, Maxwell). Problems declare `n_outputs = k`; `block_concat` assembles coupled block systems; `solver.predict(x)` returns shape `(M, k)`. Scalar problems are the `k=1` case
+- **Augmentation columns**: `AugmentedBasis` + `PolynomialColumns` widen the basis with exact `1, x, x², …` columns to pin integration constants and DC modes that leave the sinusoidal family -- transparent to every operator
 - **High-level API**: Solve PDEs in one line with `solve_linear()` and `solve_nonlinear()`
 - **Robust linear solver**: Pluggable least-squares back-ends; the default `auto` routes Cholesky -> QR -> SVD, and backward-stable QR delivers SVD-grade accuracy at QR cost on the rank-deficient random-feature system
 - **Learnable bandwidth**: `LearnableFastLSQ` optimises the bandwidth (scalar or anisotropic) via reparameterisation
@@ -339,6 +469,7 @@ See `examples/add_your_own_pde.py` for the complete tutorial.
 - **Adaptive collocation**: `n_pde` / `n_bc` default to feature-count-scaled values, overridable per solve
 - **Built-in plotting**: Solution visualization, convergence plots, spectral sensitivity
 - **Geometry samplers**: Box, ball, sphere, interval, custom samplers
+- **Meshless complex geometry**: `SDFDomain` takes any membership oracle `ψ(x)` (negative inside) and supplies interior points, boundary points and outward normals `∇ψ/‖∇ψ‖` for Neumann/Robin conditions. CSG composition (`|`, `&`, `-`) builds non-convex and multiply-connected domains; built-ins include disk, annulus, L-shape, flower, arbitrary polygon, and a D-shaped tokamak poloidal cross-section
 - **Diagnostics**: Problem validation, conditioning checks, error detection
 - **Export utilities**: NumPy conversion, checkpoint saving/loading
 - **PyTorch Lightning**: Integration for training loops

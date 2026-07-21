@@ -65,7 +65,7 @@ import math
 
 import torch
 import numpy as np
-from typing import Optional, Sequence, Union
+from typing import Callable, Optional, Sequence, Union
 
 from fastlsq.device import get_device
 
@@ -374,6 +374,87 @@ class SinusoidalBasis:
         out = delta * torch.sin(half_sum) * torch.sinc(sinc_arg)
         return out * self._inv_norm
 
+    def multi_integral(
+        self,
+        x: torch.Tensor,
+        dims: Sequence[int],
+        lowers: Sequence[float],
+        uppers: Optional[Sequence[Optional[float]]] = None,
+        cache: Optional[BasisCache] = None,
+    ) -> torch.Tensor:
+        """Simultaneous integral over **several** axes, in closed form -> (M, N).
+
+        Generalises :meth:`definite_integral` from one axis to any subset.  Each
+        axis may independently be definite (numeric ``upper``) or **Volterra**
+        (``upper=None``, running to ``x[:, k]``), so a mixed space-time operator
+        such as "definite over x, running in t" is a single call.
+
+        The plane wave factorises over axes -- ``e^{i W·x} = ∏_k e^{i W_k x_k}`` --
+        so the multi-axis integral is a *product* of the same stable one-axis
+        factors, and the phase collapses to the value at the per-axis midpoint::
+
+            ∫∫ φ_j ∏_{k∈S} dx_k = [∏_{k∈S} Δ_k · sinc(W_k Δ_k / 2π)] · sin(Z_mid)
+
+        where ``Δ_k = hi_k − lo_k`` and ``Z_mid`` is ``Z`` evaluated with each
+        integrated axis held at ``(lo_k + hi_k)/2``.  With ``|S| = 1`` this is
+        exactly :meth:`definite_integral`.
+
+        Exact, quadrature-free, and finite for near-DC features on every axis
+        (``torch.sinc`` handles ``W_k → 0``, where the factor tends to ``Δ_k``).
+
+        Parameters
+        ----------
+        x : Tensor, shape (M, d)
+        dims : sequence of int
+            Axes to integrate over.  Must be distinct.
+        lowers : sequence of float
+            Lower limit per entry of ``dims``.
+        uppers : sequence of (float or None), optional
+            Upper limit per entry of ``dims``; ``None`` means Volterra along that
+            axis.  Default: all Volterra.
+        cache : BasisCache, optional
+            Accepted for API symmetry and unused -- the phase is required at the
+            midpoints, not at ``x``.
+
+        Returns
+        -------
+        Tensor, shape (M, N)
+        """
+        if x.dtype != self.W.dtype or x.device != self.W.device:
+            x = x.to(dtype=self.W.dtype, device=self.W.device)
+
+        dims = list(dims)
+        if len(set(dims)) != len(dims):
+            raise ValueError(f"multi_integral: dims must be distinct, got {dims}")
+        lowers = list(lowers)
+        if len(lowers) != len(dims):
+            raise ValueError("multi_integral: lowers must have one entry per dim")
+        if uppers is None:
+            uppers = [None] * len(dims)
+        uppers = list(uppers)
+        if len(uppers) != len(dims):
+            raise ValueError("multi_integral: uppers must have one entry per dim")
+
+        x_mid = x.clone()
+        amp = torch.ones(
+            x.shape[0], self.n_features, device=self.W.device, dtype=self.W.dtype
+        )
+        for k, lo, up in zip(dims, lowers, uppers):
+            Wk = self.W[k : k + 1, :]                       # (1, N)
+            if up is None:
+                hi = x[:, k : k + 1]                        # (M, 1) running limit
+            else:
+                hi = torch.full(
+                    (x.shape[0], 1), float(up),
+                    device=self.W.device, dtype=self.W.dtype,
+                )
+            delta = hi - float(lo)                          # (M, 1)
+            x_mid[:, k] = (0.5 * (float(lo) + hi)).reshape(-1)
+            amp = amp * delta * torch.sinc((Wk * delta) / (2.0 * np.pi))
+
+        Z_mid = self.cache(x_mid).Z
+        return (amp * torch.sin(Z_mid)) * self._inv_norm
+
     def iterated_integral(
         self,
         x: torch.Tensor,
@@ -630,6 +711,74 @@ class SinusoidalBasis:
                 result = result + coeff * D
         return result
 
+    # ------------------------------------------------------------------
+    # Fourier-multiplier (symbol) operators
+    # ------------------------------------------------------------------
+
+    def symbol(
+        self,
+        x: torch.Tensor,
+        m: Union[Callable[[torch.Tensor], torch.Tensor], torch.Tensor],
+        cache: Optional[BasisCache] = None,
+    ) -> torch.Tensor:
+        """Evaluate a Fourier-multiplier operator with symbol ``m`` -> (M, N).
+
+        A Fourier multiplier is defined by its action on plane waves,
+        ``L e^{iξ·x} = m(ξ) e^{iξ·x}``.  Every feature is a plane wave, so the
+        action is **exact and diagonal** -- a per-column rescale, no quadrature
+        and no discretisation of the (generally nonlocal, singular) kernel::
+
+            φ_j(x)   = sin(W_j·x + b_j) = Im{e^{i(W_j·x + b_j)}}
+            (Lφ_j)(x) = Im{m(W_j) e^{i(W_j·x + b_j)}}
+                      = Re m(W_j)·sin(Z_j) + Im m(W_j)·cos(Z_j)
+
+        Both phases are already in the cache, so the cost is one ``(1, N)``
+        symbol evaluation plus an axpy -- the same O(MN) as any other operator.
+
+        A **real** symbol (the common case: even, real-valued kernels; the
+        fractional Laplacian; any even-order constant-coefficient operator)
+        maps sin to sin, so the ``cos`` term is skipped entirely.
+
+        Parameters
+        ----------
+        x : Tensor, shape (M, d)
+        m : callable or Tensor
+            The symbol.  A callable receives ``W`` of shape ``(d, N)`` -- the
+            frequency of every feature, columnwise -- and returns a real or
+            complex tensor broadcastable to ``(1, N)``.  A tensor is used
+            directly (a precomputed symbol).  Note the callable sees all of
+            ``W``, so radial symbols such as ``‖ξ‖^{2s}`` generalise to any
+            dimension without the caller slicing rows by hand.
+        cache : BasisCache, optional
+
+        Returns
+        -------
+        Tensor, shape (M, N)
+
+        Notes
+        -----
+        Sign convention: ``F[u](ξ) = ∫ u(x) e^{−iξ·x} dx``, under which
+        ``∂_k ↦ iξ_k``, ``Δ ↦ −‖ξ‖²`` and ``k * u ↦ k̂(ξ) û(ξ)``.
+        """
+        if cache is None:
+            cache = self.cache(x)
+
+        m_val = m(self.W) if callable(m) and not isinstance(m, torch.Tensor) else m
+        m_val = torch.as_tensor(m_val, device=self.W.device)
+        if m_val.dim() == 1:
+            m_val = m_val.reshape(1, -1)
+        if m_val.dim() != 2 or m_val.shape[-1] not in (1, self.n_features):
+            raise ValueError(
+                f"symbol must broadcast to (1, {self.n_features}); "
+                f"got shape {tuple(m_val.shape)}"
+            )
+
+        if m_val.is_complex():
+            re, im = m_val.real, m_val.imag
+            out = re.to(self.W.dtype) * cache.sin_Z + im.to(self.W.dtype) * cache.cos_Z
+        else:
+            out = m_val.to(self.W.dtype) * cache.sin_Z
+        return out * self._inv_norm
 
 
 # ======================================================================
@@ -807,8 +956,9 @@ class DiffOperator:
     def __add__(self, other):
         if isinstance(other, DiffOperator):
             return DiffOperator(self.terms + other.terms)
-        if isinstance(other, (IntegralOperator, IntegroDifferentialOperator)):
-            # Mixing differential and integral terms -> integro-differential operator.
+        # Mixing differential with integral / multiplier / kernel terms ->
+        # integro-differential.  Duck-typed on .apply, see _as_terms.
+        if callable(getattr(other, "apply", None)):
             return IntegroDifferentialOperator([(1.0, self)]) + other
         return NotImplemented
 
@@ -1084,6 +1234,307 @@ class IntegralOperator:
 
 
 # ======================================================================
+# MultiIntegralOperator: closed-form integration over several axes at once
+# ======================================================================
+
+class MultiIntegralOperator:
+    """Closed-form integral over **several** axes simultaneously.
+
+    :class:`IntegralOperator` handles one axis; this handles any subset, with
+    each axis independently definite or Volterra.  That covers the operators a
+    single-axis integral cannot express -- an area/volume average, a
+    space-and-time accumulated load, or a mixed "definite in space, running in
+    time" memory term::
+
+        >>> # (Au)(x) = ∫₀¹∫₀¹ u dx₀ dx₁   -- a scalar functional of u
+        >>> A = MultiIntegralOperator.definite(dims=[0, 1], lowers=[0, 0],
+        ...                                    uppers=[1, 1], d=2)
+        >>> # running in both axes (2-D Volterra)
+        >>> V = MultiIntegralOperator.volterra(dims=[0, 1], lowers=[0, 0], d=2)
+        >>> # definite over space, running in time
+        >>> M = MultiIntegralOperator(dims=[0, 1], lowers=[0.0, 0.0],
+        ...                           uppers=[1.0, None], d=2)
+
+    Exact and quadrature-free: the plane wave factorises over axes, so the
+    result is a product of the same numerically stable one-axis factors used by
+    :meth:`SinusoidalBasis.definite_integral`.  See
+    :meth:`SinusoidalBasis.multi_integral`.
+
+    Composes with differential, symbol and single-axis integral terms through
+    the usual arithmetic.
+
+    Scope
+    -----
+    Order is **1 per axis**.  A repeated (``order=n``) integral along a single
+    axis is :class:`IntegralOperator`, whose Cauchy/Taylor branches handle the
+    small-``W`` cancellation that a naive repeated product would suffer; there
+    is no combined "n-fold along several axes" path.
+    """
+
+    def __init__(
+        self,
+        dims: Sequence[int],
+        lowers: Sequence[float],
+        d: int,
+        uppers: Optional[Sequence[Optional[float]]] = None,
+    ):
+        self.dims = list(dims)
+        self.lowers = list(lowers)
+        self.uppers = list(uppers) if uppers is not None else [None] * len(self.dims)
+        self.d = d
+
+    @classmethod
+    def definite(
+        cls, dims: Sequence[int], lowers: Sequence[float],
+        uppers: Sequence[float], d: int,
+    ) -> MultiIntegralOperator:
+        """Definite integral over a box in the given axes."""
+        return cls(dims=dims, lowers=lowers, uppers=uppers, d=d)
+
+    @classmethod
+    def volterra(
+        cls, dims: Sequence[int], lowers: Sequence[float], d: int
+    ) -> MultiIntegralOperator:
+        """Running (Volterra) integral in every given axis."""
+        return cls(dims=dims, lowers=lowers, uppers=None, d=d)
+
+    def apply(
+        self,
+        basis: SinusoidalBasis,
+        x: torch.Tensor,
+        cache: Optional[BasisCache] = None,
+    ) -> torch.Tensor:
+        return basis.multi_integral(
+            x, self.dims, self.lowers, uppers=self.uppers, cache=cache
+        )
+
+    # Arithmetic composition -> IntegroDifferentialOperator
+    def __add__(self, other):
+        return IntegroDifferentialOperator([(1.0, self)]).__add__(other)
+
+    def __radd__(self, other):
+        return IntegroDifferentialOperator([(1.0, self)]).__radd__(other)
+
+    def __sub__(self, other):
+        return self.__add__(-other)
+
+    def __neg__(self):
+        return IntegroDifferentialOperator([(-1.0, self)])
+
+    def __mul__(self, scalar: CoeffT):
+        return IntegroDifferentialOperator([(scalar, self)])
+
+    __rmul__ = __mul__
+
+    def __repr__(self) -> str:
+        parts = []
+        for k, lo, up in zip(self.dims, self.lowers, self.uppers):
+            hi = f"x_{k}" if up is None else f"{up}"
+            parts.append(f"∫_{lo}^{hi} d x_{k}")
+        return "MultiIntegralOperator(" + " ".join(parts) + ")"
+
+
+# ======================================================================
+# SymbolOperator: Fourier-multiplier (nonlocal / convolution) operators
+# ======================================================================
+
+class SymbolOperator:
+    """Fourier-multiplier operator ``L`` defined by its symbol ``m``: ``L e^{iξ·x} = m(ξ) e^{iξ·x}``.
+
+    This is the *nonlocal* branch of the operator taxonomy.  Because every
+    feature is itself a plane wave, the symbol acts **diagonally** on the basis:
+    assembling ``L`` is a per-column rescale of the design matrix, exact to
+    machine precision, with no quadrature and no discretisation of the kernel.
+
+    That is the whole point.  Operators that are genuinely hard for mesh methods
+    -- the fractional Laplacian is nonlocal with a singular kernel, so a
+    finite-element or finite-difference discretisation yields a *dense*, badly
+    conditioned matrix -- cost exactly the same here as the Laplacian::
+
+        >>> L = SymbolOperator.fractional_laplacian(s=0.75)   # (−Δ)^0.75
+        >>> A = L.apply(basis, x)                             # (M, N), one rescale
+
+    Composes with differential and integral terms through the usual arithmetic::
+
+        >>> L = SymbolOperator.fractional_laplacian(0.5) + 3.0 * Op.identity(d=2)
+
+    Parameters
+    ----------
+    symbol : callable or Tensor
+        Receives ``W`` of shape ``(d, N)``, returns something broadcastable to
+        ``(1, N)``, real or complex.  See :meth:`SinusoidalBasis.symbol`.
+    name : str, optional
+        Label used by ``repr`` only.
+
+    Notes
+    -----
+    Sign convention ``F[u](ξ) = ∫ u(x) e^{−iξ·x} dx``, so ``∂_k ↦ iξ_k``,
+    ``Δ ↦ −‖ξ‖²``, ``k * u ↦ k̂(ξ) û(ξ)``.
+
+    **Which fractional Laplacian.** The symbol calculus applies the multiplier to
+    the global plane-wave extension of the trial function, so
+    :meth:`fractional_laplacian` is the **whole-space (restricted)** operator
+    ``(−Δ)^s`` on ``R^d``, *not* the spectral or regional variant defined by an
+    eigenbasis of a bounded domain.  These three coincide on ``R^d`` and differ
+    on a bounded domain; on a bounded domain the fit is therefore of the
+    restricted operator evaluated at interior collocation points.  Do not read
+    results here as the spectral fractional Laplacian.
+    """
+
+    def __init__(
+        self,
+        symbol: Union[Callable[[torch.Tensor], torch.Tensor], torch.Tensor],
+        name: Optional[str] = None,
+    ):
+        self.symbol = symbol
+        self.name = name
+
+    # ------------------------------------------------------------------
+    # Evaluation
+    # ------------------------------------------------------------------
+
+    def apply(
+        self,
+        basis: SinusoidalBasis,
+        x: torch.Tensor,
+        cache: Optional[BasisCache] = None,
+    ) -> torch.Tensor:
+        """Evaluate this multiplier on ``basis`` at points ``x`` -> (M, N)."""
+        return basis.symbol(x, self.symbol, cache=cache)
+
+    # ------------------------------------------------------------------
+    # Factories
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _radial_sq(W: torch.Tensor, dims: Optional[Sequence[int]]) -> torch.Tensor:
+        """``‖ξ‖²`` per feature, shape (1, N), optionally over a subset of axes."""
+        if dims is None:
+            return (W ** 2).sum(0, keepdim=True)
+        return (W[list(dims), :] ** 2).sum(0, keepdim=True)
+
+    @classmethod
+    def fractional_laplacian(
+        cls,
+        s: CoeffT,
+        dims: Optional[Sequence[int]] = None,
+        *,
+        dc_eps: float = 1e-24,
+    ) -> SymbolOperator:
+        """``(−Δ)^s`` -- symbol ``‖ξ‖^{2s}``.  Real, so the design matrix stays sin-only.
+
+        ``s`` may be a **learnable tensor** (e.g. ``nn.Parameter``): the symbol is
+        ``exp(s·log‖ξ‖²)``, differentiable in ``s``, so the order itself can be
+        recovered by gradient descent from data.
+
+        Parameters
+        ----------
+        s : float or Tensor
+            Fractional order.  ``s = 1`` reproduces ``−Δ`` exactly.
+        dims : sequence of int, optional
+            Restrict the Laplacian to these axes (e.g. spatial only in a
+            space-time problem).  Default: all axes.
+        dc_eps : float
+            Floor on ``‖ξ‖²`` before exponentiation, so a DC feature gives a
+            negligible (rather than ``0**s``) value and keeps ``d/ds`` finite.
+        """
+
+        def m(W: torch.Tensor) -> torch.Tensor:
+            w2 = cls._radial_sq(W, dims).clamp_min(dc_eps)
+            return w2 ** s
+
+        return cls(m, name=f"(-Δ)^{s}")
+
+    @classmethod
+    def riesz_potential(
+        cls,
+        s: CoeffT,
+        dims: Optional[Sequence[int]] = None,
+        *,
+        dc_eps: float = 1e-8,
+    ) -> SymbolOperator:
+        """``(−Δ)^{−s}`` -- symbol ``‖ξ‖^{−2s}``, the inverse/smoothing direction.
+
+        Genuinely singular at ``ξ = 0`` (the Riesz potential of a constant
+        diverges), so features with ``‖ξ‖ <= dc_eps`` are **zeroed** rather than
+        divided by ~0 -- the same DC convention as
+        :meth:`DiffOperator.antiderivative`.  Pin the resulting constant with a
+        boundary row or a polynomial column
+        (:class:`~fastlsq.augment.PolynomialColumns`).
+        """
+
+        def m(W: torch.Tensor) -> torch.Tensor:
+            w2 = cls._radial_sq(W, dims)
+            safe = w2 > dc_eps ** 2
+            w2_safe = torch.where(safe, w2, torch.ones_like(w2))
+            return torch.where(safe, w2_safe ** (-s), torch.zeros_like(w2))
+
+        return cls(m, name=f"(-Δ)^-{s}")
+
+    @classmethod
+    def riesz_transform(
+        cls, dim: int, *, dc_eps: float = 1e-8
+    ) -> SymbolOperator:
+        """``R_k`` -- symbol ``−i ξ_k / ‖ξ‖``.  Complex, so both phases are used."""
+
+        def m(W: torch.Tensor) -> torch.Tensor:
+            norm = cls._radial_sq(W, None).sqrt()
+            safe = norm > dc_eps
+            norm_safe = torch.where(safe, norm, torch.ones_like(norm))
+            ratio = torch.where(
+                safe, W[dim : dim + 1, :] / norm_safe, torch.zeros_like(norm)
+            )
+            return torch.complex(torch.zeros_like(ratio), -ratio)
+
+        return cls(m, name=f"R_{dim}")
+
+    @classmethod
+    def convolution(
+        cls, khat: Union[Callable[[torch.Tensor], torch.Tensor], torch.Tensor]
+    ) -> SymbolOperator:
+        """``u ↦ k * u`` from the kernel's Fourier transform ``k̂``.
+
+        ``khat`` receives ``W`` of shape ``(d, N)`` and returns the transform at
+        each feature frequency -- real for a real *even* kernel, complex
+        otherwise.  Supplying ``k̂`` rather than ``k`` is deliberate: it keeps the
+        assembly quadrature-free.  A kernel known only pointwise must have its
+        transform supplied analytically (many standard kernels have one: a
+        Gaussian ``exp(−a‖x‖²)`` has ``k̂ = (π/a)^{d/2} exp(−‖ξ‖²/4a)``).
+
+        >>> a = 4.0
+        >>> K = SymbolOperator.convolution(
+        ...     lambda W: (np.pi / a) ** (W.shape[0] / 2)
+        ...     * torch.exp(-(W ** 2).sum(0, keepdim=True) / (4 * a))
+        ... )
+        """
+        return cls(khat, name="k*")
+
+    # ------------------------------------------------------------------
+    # Arithmetic composition -> IntegroDifferentialOperator
+    # ------------------------------------------------------------------
+
+    def __add__(self, other):
+        return IntegroDifferentialOperator([(1.0, self)]).__add__(other)
+
+    def __radd__(self, other):
+        return IntegroDifferentialOperator([(1.0, self)]).__radd__(other)
+
+    def __sub__(self, other):
+        return self.__add__(-other)
+
+    def __neg__(self):
+        return IntegroDifferentialOperator([(-1.0, self)])
+
+    def __mul__(self, scalar: CoeffT):
+        return IntegroDifferentialOperator([(scalar, self)])
+
+    __rmul__ = __mul__
+
+    def __repr__(self) -> str:
+        return f"SymbolOperator({self.name or 'm(ξ)'})"
+
+
+# ======================================================================
 # IntegroDifferentialOperator: the common roof for differential + integral terms
 # ======================================================================
 
@@ -1107,9 +1558,16 @@ class IntegroDifferentialOperator:
 
     @staticmethod
     def _as_terms(other):
+        """Wrap any operator-shaped object as a term list.
+
+        Membership is **duck-typed** on ``.apply(basis, x, cache)`` rather than a
+        fixed isinstance tuple, so operators defined in other modules (e.g.
+        :class:`~fastlsq.kernels.SeparableKernelOperator`) compose with the
+        built-ins without this module having to import them.
+        """
         if isinstance(other, IntegroDifferentialOperator):
             return list(other.terms)
-        if isinstance(other, (DiffOperator, IntegralOperator)):
+        if callable(getattr(other, "apply", None)):
             return [(1.0, other)]
         return None
 
@@ -1220,8 +1678,9 @@ class ProjectionOperator:
     * The window is a *fixed prior* (set from data moments), required for
       convergence -- not a tuned hyperparameter.
     * This is a different analytic-kernel mechanism from the Fourier-symbol
-      (convolution / fractional) operators already in the package; it is the
-      **projection / Radon (line/hyperplane integral)** class.
+      (convolution / fractional) operators in :class:`SymbolOperator`, which act
+      diagonally on the basis; this is the **projection / Radon (line/hyperplane
+      integral)** class, whose rows mix features.
     * No novelty is claimed over ELM / RBF-for-integral-equations prior art; the
       distinctive parts are *quadrature-free* closed-form projection rows,
       differentiability in the optics, and one unified linear-least-squares solve.

@@ -2,6 +2,217 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [0.6.0] - 2026-07-21
+
+Completes the operator taxonomy: multi-axis integrals, separable kernels, and
+Fredholm equations, with the integral-equation problems promoted into the same
+`solve_linear` harness as the PDEs so they report in one table.
+
+### New features
+
+| Feature | API | What it buys |
+|---|---|---|
+| Multi-axis integrals | `MultiIntegralOperator`, `SinusoidalBasis.multi_integral` | Integrate over any subset of axes at once, each independently definite or Volterra — area/volume functionals and mixed "definite in space, running in time" memory terms that a single-axis operator cannot express |
+| Separable (degenerate) kernels | `SeparableKernelOperator` | `K(x,y) = Σ g_m(x) h_m(y)` assembles as a rank-`R` product `G @ C`; the inner products `C` are computed once, independent of the collocation points |
+| Fredholm, second kind | `fredholm_second_kind` | `u − λ∫K u = f` as `I − λK`, solved in the same single least squares as everything else |
+| Kernel diagnostics | `degenerate_eigenvalues`, `check_quadrature` | The `λ` at which the equation is singular, and whether the inner-product quadrature actually resolves the basis — both failure modes that otherwise show up only as a bad fit |
+| Integral Problem classes | `fastlsq.problems.integral` | Four integral / integro-differential problems with **closed-form** solutions, running through `solve_linear` |
+
+### Added
+
+- **`MultiIntegralOperator` / `SinusoidalBasis.multi_integral`.** The plane wave
+  factorises over axes, `e^{iW·x} = ∏_k e^{iW_k x_k}`, so a multi-axis integral
+  is a *product* of the same numerically stable one-axis factors already used by
+  `definite_integral`, and the phase collapses to the value at the per-axis
+  midpoint:
+
+      ∫∫ φ_j ∏_{k∈S} dx_k = [∏_{k∈S} Δ_k · sinc(W_k Δ_k / 2π)] · sin(Z_mid)
+
+  Exact, quadrature-free, and finite for near-DC features on every axis. With
+  `|S| = 1` it reproduces `IntegralOperator.definite` bit-for-bit (verified to
+  1e-14); against tensor-product quadrature in 2-D and 3-D it agrees to the
+  quadrature's own error. Order is 1 per axis — a repeated integral along one
+  axis remains `IntegralOperator`, whose Cauchy/Taylor branches handle the
+  small-`W` cancellation a naive repeated product would suffer.
+
+- **`SeparableKernelOperator` (`fastlsq/kernels.py`).** A degenerate kernel
+  collapses the integral operator to `Σ_m g_m(x) ∫ h_m u`, so acting on the
+  basis needs only the `R × N` matrix `C_{mj} = ∫ h_m φ_j`. Assembly is
+  `G(x) @ C` — a rank-`R` factorisation instead of an `M × M` kernel evaluation,
+  and the assembled block's rank is exactly `R` (verified).
+
+  Quadrature enters in exactly one place, computing `C`, and it is a
+  precomputation rather than a per-row cost: tensor-product Gauss-Legendre,
+  spectrally convergent for smooth integrands. Because it must still resolve the
+  feature oscillation, `check_quadrature` reports the achieved convergence
+  (2e-14 for a typical basis; the test suite also pins that it *flags* an
+  under-resolved one), and `from_inner_products` accepts analytic `C` to skip
+  quadrature entirely.
+
+- **`fredholm_second_kind` and `degenerate_eigenvalues`.** Fredholm equations of
+  the second kind assemble as `I − λK`. For a rank-`R` degenerate kernel there
+  are at most `R` characteristic values, at which the equation is singular;
+  `degenerate_eigenvalues` computes them so a near-singular `λ` is detectable
+  instead of silently producing a garbage fit. For `K(x,y)=xy` on `[0,1]` it
+  recovers the analytic `λ = 3` as `3.0000000000000093`.
+
+  Validated against degenerate-kernel theory rather than a reference quadrature:
+  the exact solution of `u − λ∫₀¹xy·u = f` is `u = f + λcx` with
+  `c = ∫yf/(1−λ/3)`, matched to ~1e-8 for `λ` swept from 0.25 to 2.9 (i.e. right
+  up to the singular value). `λ` may be an `nn.Parameter`.
+
+- **`fastlsq/problems/integral.py`.** `FredholmProductKernel`,
+  `FredholmRank2Kernel`, `VolterraSecondKind` and `IntegroDifferentialODE`, each
+  with a closed-form solution, running through `solve_linear` exactly as the PDE
+  problems do — so integral equations now produce a results table alongside the
+  PDEs rather than living only in example scripts. The module docstring writes
+  down the (duck-typed, no base class) Problem contract, which was previously
+  implicit and inconsistent.
+
+  Note the second-kind problems return an **empty** `bcs` list: the identity term
+  makes them well posed with no boundary rows at all. Only the
+  integro-differential ODE, which has a genuine constant of integration, needs
+  one.
+
+- **Accuracy regressions (`tests/test_problems_integral.py`).** Each problem is
+  solved through the real harness and checked against its analytic solution, and
+  separately each closed form is verified to satisfy its own equation by
+  independent quadrature — so a closed form and an operator cannot be wrong in
+  the same direction without being caught.
+
+### Measured
+
+All five integral-equation problems, through `solve_linear` (300 features, 2000
+collocation points), against their closed-form solutions:
+
+| Problem | rel L2 | grad rel L2 | boundary rows |
+|---|---|---|---|
+| Fredholm `K=xy`, λ=0.5 | 5.5e-14 | 5.7e-12 | 0 |
+| Fredholm `K=xy`, λ=2.0 | 3.8e-13 | 3.9e-11 | 0 |
+| Fredholm rank-2, λ=0.4 | 9.1e-14 | 9.5e-12 | 0 |
+| Volterra 2nd kind, λ=1.5 | 8.8e-13 | 1.0e-10 | 0 |
+| Integro-differential ODE, λ=4.0 | 6.2e-16 | 1.7e-14 | 1 |
+
+Approaching the kernel's singular value `λ = 3` costs only ~2 orders of
+magnitude: 5.5e-14 at `λ = 0.5`, 6.8e-13 at `λ = 2.9`, 3.9e-12 at `λ = 2.99`.
+
+### Documentation
+
+- The README now tables the SDF primitives (`sdf_ball`, `sdf_disk`, `sdf_box`,
+  `sdf_annulus`, `sdf_lshape`, `sdf_flower`, `sdf_polygon`, `sdf_tokamak`) and
+  the CSG combinators (`sdf_union`, `sdf_intersection`, `sdf_difference`,
+  `sdf_complement`) by name. They were exported in `__all__` from 0.5.0 but only
+  described in prose, so the composable `ψ`-level API was effectively
+  undiscoverable — you could find `SDFDomain.disk()` but not `sdf_disk`, and the
+  CSG functions not at all.
+- `PolynomialColumns` is likewise named explicitly alongside `AugmentedBasis`.
+
+### Changed
+
+- **Operator composition is now duck-typed.** `IntegroDifferentialOperator._as_terms`
+  and `DiffOperator.__add__` dispatch on the presence of `.apply(basis, x, cache)`
+  rather than a fixed `isinstance` tuple, so operators defined in other modules
+  (`SeparableKernelOperator`, and any user-defined operator) compose with the
+  built-ins without `basis.py` importing them. No change to existing behaviour.
+
+## [0.5.0] - 2026-07-21
+
+Closes three gaps between what the paper describes and what the package shipped:
+SDF geometry (§2.7), Fourier-symbol operators (§3.4), and explicit polynomial
+augmentation columns (§2.3).
+
+### Added
+
+- **SDF / membership-oracle geometry (`fastlsq.geometry`).** A domain can now be
+  given as any callable `ψ(x)` that is negative inside — no mesh, no analytic
+  sampler. `sample_sdf` rejection-samples the interior (unbiased, so the radial
+  CDF of a disk is exactly `r²`), `project_to_boundary` lands points on `ψ = 0`,
+  and `outward_normal` returns `∇ψ/‖∇ψ‖` via autograd, which is what a Neumann or
+  Robin condition needs. `SDFDomain` bundles these with a bounding box and CSG
+  composition (`|`, `&`, `-`), plus `neumann_rows` / `robin_rows` that contract
+  the analytic basis gradient against the normal into an `(M, N)` block.
+
+  Shipped domains: `disk`, `ball`, `box`, `annulus` (multiply-connected),
+  `lshape` (reentrant corner), `flower` (smooth non-convex), `polygon`, and
+  `tokamak` — the D-shaped Miller poloidal cross-section, at the same MAST-U
+  scale (`R ∈ [0.6, 1.4]`) as `examples/grad_shafranov.py`, which until now used
+  a plain rectangle.
+
+  Projection is **damped** Newton, `x ← x − ψ∇ψ/‖∇ψ‖²`, with per-point
+  backtracking and monotone acceptance. The `1/‖∇ψ‖²` normalisation matters:
+  the textbook `x − ψ∇ψ` is valid only for a true distance function, and
+  `sdf_flower` has `‖∇ψ‖` spanning 1 to ~10. Undamped, it left 
+  `|ψ| ≈ 1.5e-1` on the boundary; damped and monotone, 99.9% of interior seeds
+  converge to `1e-10`. The residual failures are seeds within `r < 0.2` of the
+  centre, where a non-distance `ψ` has no unique nearest boundary point;
+  `sample_boundary_sdf` filters them rather than hiding them.
+
+- **`SymbolOperator` — Fourier-multiplier (nonlocal) operators.** Every feature
+  is a plane wave, so a multiplier `L e^{iξ·x} = m(ξ) e^{iξ·x}` acts *diagonally*
+  on the basis: assembling `L` is a per-column rescale, exact to machine
+  precision, with no quadrature and no discretisation of the kernel. Operators
+  that are hard for mesh methods — the fractional Laplacian is nonlocal with a
+  singular kernel, giving a dense ill-conditioned FEM/FD matrix — cost exactly
+  what the Laplacian costs here.
+
+  Factories: `fractional_laplacian(s)`, `riesz_potential(s)`,
+  `riesz_transform(k)`, `convolution(k̂)`. The order `s` may be an
+  `nn.Parameter`: the symbol is `exp(s·log‖ξ‖²)`, so gradient descent recovers a
+  planted order (test recovers `s = 0.65` to `<1e-3`). Composes with `Op` and
+  `IntegralOperator` through the usual arithmetic.
+
+  Verified against independent references, not just self-consistency: `s=1`
+  reproduces `−Δ` and `s=2` reproduces `Δ²` bit-exactly; the symbol is checked
+  against the **singular-integral definition** including its normalising constant
+  `C(1,s)`; and Gaussian convolution matches direct quadrature to `<1e-8`.
+
+  `ConvolutionOperator` is `SymbolOperator.convolution(k̂)` — this is what
+  `examples/memory_diffusion.py:80` was doing by hand with a `(1, N)` broadcast
+  coefficient. That hand-rolled version uses `basis.W[0:1, :]`, correct only
+  because `d=2` has exactly one spatial axis; a symbol sees all of `W` and
+  generalises to any dimension.
+
+- **Polynomial / DC augmentation columns (`fastlsq.augment`).** `AugmentedBasis`
+  widens a basis with explicit `1, x, x², …` columns carrying **exact** operator
+  images — analytic monomial derivatives, antiderivatives (a negative multi-index
+  integrates: `x^p → x^{p+1}/(p+1)`), and Cauchy iterated integrals — not a
+  zero-derivative stub. It implements the same duck-typed protocol as
+  `SinusoidalBasis`, so `Op`, `IntegralOperator` and `SymbolOperator` all work
+  unchanged and return `(M, N + n_cols)`.
+
+  This is what §2.3 means by an integration constant "pinned by an explicit
+  polynomial column"; previously the only such column in the repo was hand-rolled
+  in `examples/extras/scenarios/s01_beamloss_ode.py`, which had to maintain its
+  derivative block by hand.
+
+  Scope, honestly: a sinusoidal bank with random phases can already approximate a
+  constant from near-DC features, so this is an improvement, not a rescue — on
+  `u'' = f` with a DC offset it is neutral at `C = 0` and ~12× better at
+  `C = 1000`. A non-constant monomial has no function-valued Fourier-multiplier
+  image, so `SymbolOperator` on `degree > 0` columns raises rather than inventing
+  a value.
+
+### Fixed
+
+- **`ProjectionOperator`'s docstring claimed the Fourier-symbol operators were
+  "already in the package".** They were not, until this release. It now points at
+  `SymbolOperator` and states the actual distinction (a symbol acts diagonally;
+  a projection row mixes features).
+
+### Notes
+
+- **Which fractional Laplacian.** The symbol calculus applies the multiplier to
+  the global plane-wave extension of the trial function, so
+  `fractional_laplacian` is the **whole-space (restricted)** `(−Δ)^s` on `R^d`,
+  *not* the spectral or regional variant defined by an eigenbasis of a bounded
+  domain. These coincide on `R^d` and differ on a bounded domain. Results should
+  not be read as the spectral fractional Laplacian.
+
+- Boundary points from `sample_boundary_sdf` are **not** uniform with respect to
+  surface measure — they are the pushforward of the uniform box measure under the
+  projection, which over-weights convex bulges. Fine for collocation; do not use
+  them as quadrature nodes for a surface integral without reweighting.
+
 ## [0.4.3] - 2026-07-20
 
 ### Fixed
