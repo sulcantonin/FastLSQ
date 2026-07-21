@@ -16,7 +16,10 @@ Key ideas
   triangular matrix (or a scalar multiple of the identity).
 * **Inner exact solve** -- for each L, the PDE matrix A(L) is assembled
   analytically via the cyclic derivative formula and beta*(L) = A(L)^+ b
-  is computed in one shot.  Gradients flow back through `torch.linalg.lstsq`.
+  is computed in one shot.  The outer gradient does *not* backpropagate
+  through that solve: by the envelope theorem the beta* term drops out
+  (A^T r = 0), so `train_bandwidth` detaches beta* and differentiates only
+  the assembled A(L).  This is exact and avoids lstsq's cond(A)^2 backward.
 * **Learnable operator coefficients** -- Op accepts nn.Parameter in scalar
   multiplication, e.g. ``Op.laplacian(d=2) + k**2 * Op.identity(d=2)`` with
   ``k = nn.Parameter(...)``.  Build the operator inside forward() so it
@@ -196,12 +199,17 @@ class LearnableFastLSQ(nn.Module):
 
         Solves ``beta* = argmin ||A beta - b||^2 + mu ||beta||^2`` through the
         SVD-based ``gelsd`` least-squares driver with ``rcond`` truncation, so
-        gradients still flow back to ``L`` *and* the solve is stable when ``A``
-        is rank-deficient.  (The ``rcond`` cut suppresses the near-null space,
-        and ``gelsd``'s backward uses the stable pseudoinverse formula rather
-        than per-singular-vector derivatives -- which is what keeps the outer
-        AdamW loop's gradients finite.  A plain ``torch.linalg.lstsq`` *without*
-        ``rcond`` is what amplifies the null space.)
+        the solve is stable when ``A`` is rank-deficient (the ``rcond`` cut
+        suppresses the near-null space).
+
+        .. warning::
+           This is autograd-traceable, but do **not** rely on backpropagating
+           through it to fit the bandwidth.  ``lstsq``'s backward carries a
+           ``(A^T A)^-1``, squaring ``cond(A)``; for a typical collocation
+           system (``cond ~ 1e11``) that is ~1e22 and the returned gradient is
+           numerical noise pointing in the wrong direction.  :func:`train_bandwidth`
+           deliberately solves under ``no_grad`` and relies on the envelope
+           theorem instead -- see its inline note.
 
         For ``n_outputs > 1`` the system is block-stacked: the flat solution is
         kept as ``self._beta_flat`` (shape-compatible with ``A``) for residual
@@ -311,28 +319,36 @@ def train_bandwidth(
         optimizer.zero_grad()
         A, b_rhs = problem.build(learnable, x_pde, bcs, f_pde)
         try:
-            learnable.solve_inner(A, b_rhs, mu=mu, rcond=rcond)
+            # beta* is solved under no_grad, i.e. *detached* from L, on purpose.
+            # At the least-squares optimum the residual r = A beta* - b is
+            # orthogonal to range(A), so the chain-rule term through beta* is
+            # (dJ/dbeta)^T dbeta*/dL = 2 (A^T r)^T dbeta*/dL = 0 and the total
+            # derivative collapses to the partial one (envelope theorem):
+            #     dJ/dL = 2 r^T (dA/dL) beta*.
+            # Detaching is therefore *exact*, not an approximation -- and it is
+            # the only usable route: lstsq's backward carries a (A^T A)^-1, which
+            # squares cond(A) (~2e11 for this problem, so ~5e22) far past what
+            # float64 can represent.  Backpropagating through the solve yields a
+            # "gradient" ~1e6x too large that points uphill (cos ~ -0.7 against
+            # finite differences), which trained the bandwidth the wrong way.
+            with torch.no_grad():
+                learnable.solve_inner(A, b_rhs, mu=mu, rcond=rcond)
         except torch.linalg.LinAlgError:
             if verbose:
                 print(f"  Step {step:4d}: inner SVD failed -- stopping.")
             break
         # _beta_flat is block-stacked and shape-compatible with A (for n_outputs>1);
         # learnable.beta may be reshaped to (N, k), so the loss uses _beta_flat.
+        # A keeps its graph, so dJ/dL still flows through the assembled operator.
         loss = torch.mean((A @ learnable._beta_flat - b_rhs) ** 2)
         if not torch.isfinite(loss):
             if verbose:
                 print(f"  Step {step:4d}: non-finite loss -- stopping.")
             break
-        loss.backward()
-        if any(p.grad is not None and not torch.isfinite(p.grad).all()
-               for p in learnable.parameters()):
-            if verbose:
-                print(f"  Step {step:4d}: non-finite gradient -- stopping.")
-            break
-        if clip_grad:
-            torch.nn.utils.clip_grad_norm_(learnable.parameters(), clip_grad)
-        optimizer.step()
 
+        # Record the loss *and* snapshot the parameters before optimizer.step():
+        # both describe the current iterate.  Snapshotting afterwards saved the
+        # successor of the best iterate rather than the best one itself.
         l = loss.item()
         if l < best_loss:
             best_loss = l
@@ -344,6 +360,16 @@ def train_bandwidth(
         history.append(info)
         if verbose and step % max(1, n_steps // 20) == 0:
             print(f"  Step {step:4d}: loss={l:.4e}  sigma={info['sigma']:.4f}")
+
+        loss.backward()
+        if any(p.grad is not None and not torch.isfinite(p.grad).all()
+               for p in learnable.parameters()):
+            if verbose:
+                print(f"  Step {step:4d}: non-finite gradient -- stopping.")
+            break
+        if clip_grad:
+            torch.nn.utils.clip_grad_norm_(learnable.parameters(), clip_grad)
+        optimizer.step()
 
     # restore the best iterate and re-solve beta at it
     if best_params is not None:
