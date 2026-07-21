@@ -2,6 +2,51 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [0.4.3] - 2026-07-20
+
+### Fixed
+
+- **The Σ-learner trained uphill: `train_bandwidth` now uses the exact envelope
+  gradient.** The outer loss was backpropagated *through* `torch.linalg.lstsq`,
+  whose backward carries a `(AᵀA)⁻¹` and therefore squares `cond(A)`. For a
+  routine collocation system (`cond(A) ≈ 2.2e11` on the `AnisoPoisson` benchmark)
+  that needs ~5e22 of dynamic range, far past float64. Measured against central
+  finite differences at the isotropic init, the resulting "gradient" was **4.3e6×
+  too large with `cos(angle) = −0.707`** — an *ascent* direction, which `AdamW`
+  duly followed (`clip_grad` rescaled the magnitude but preserved the direction).
+  `fit()` consequently returned a solution ~3.6× *worse* than the isotropic
+  `solve_linear` baseline it is meant to beat.
+
+  The inner solve is now performed under `no_grad` and only the assembled `A(L)`
+  is differentiated. This is **exact, not an approximation**: for
+  `J(L) = ‖A(L)β* − b‖²` the chain-rule contribution through `β*` is
+  `2 (Aᵀr)ᵀ dβ*/dL`, and `Aᵀr = 0` at the least-squares optimum (the residual is
+  orthogonal to `range(A)`), so the term vanishes identically and
+  `dJ/dL = 2 rᵀ (dA/dL) β*` — the envelope (Danskin) theorem. The detached
+  gradient matches finite differences to **1.2e-3 relative, `cos(angle) = 1.0000`**,
+  and skips the ill-conditioned backward entirely.
+
+  On the `AnisoPoisson` benchmark the training loss now descends monotonically
+  (`1.9e-3` → `9.8e-11`) instead of climbing (`1.9e-3` → `1.2e+05`), an
+  independent held-out collocation draw tracks it the whole way (no overfitting),
+  and the learned Σ reaches `4.4e-8` against the isotropic `solve_linear`
+  baseline's `1.9e-4` — **~4350× better**, where it was previously ~3.6× *worse*.
+  Not backpropagating through the solve also makes each step ~6× cheaper
+  (`tests/test_learnable.py`: 389s → 57s).
+
+  Note this is the *third* attempt at this bug (see 0.2.1 and 0.2.2): both earlier
+  fixes swapped the inner solve's driver (`svd` → rank-revealing `gelsd`) to stop
+  the gradient being `NaN`. That made it **finite but never correct** — the loop
+  still differentiated through the solve. Differentiating through an
+  ill-conditioned least-squares solve is not stabilisable by choice of driver;
+  the envelope identity removes the need to do it at all.
+- **`train_bandwidth` restored the wrong "best" iterate.** `best_params` was
+  snapshotted *after* `optimizer.step()`, so it stored `θ_{t+1}` while recording
+  `loss(θ_t)` — the best-iterate restore returned the successor of the best
+  iterate. The snapshot (and the `history` entry's `sigma` / `cov_diag`, which had
+  the same off-by-one) now happens before the step, so all three describe the same
+  point.
+
 ## [0.4.2] - 2026-07-20
 
 ### Fixed

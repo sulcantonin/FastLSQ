@@ -55,7 +55,7 @@ from fastlsq.export import (
 from fastlsq import viz
 from fastlsq import benchmark
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 __all__ = [
     # Device selection (CPU / CUDA / Apple-MPS, dtype-aware)
     "resolve_device",
