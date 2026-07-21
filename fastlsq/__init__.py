@@ -18,10 +18,12 @@ from fastlsq.basis import (
     Op,
     IntegralOperator,
     IntegroDifferentialOperator,
+    SymbolOperator,
     GaussianWindowedBasis,
     ProjectionOperator,
     FeatureBasis,
 )
+from fastlsq.augment import AugmentedBasis, PolynomialColumns
 from fastlsq.solvers import FastLSQSolver, PIELMSolver
 from fastlsq.vector  import VectorBasis, VectorFastLSQSolver
 from fastlsq.linalg import solve_lstsq
@@ -43,6 +45,24 @@ from fastlsq.geometry import (
     sample_interval,
     sample_boundary_box,
     get_sampler,
+    # SDF / membership-oracle geometry
+    SDFDomain,
+    sample_sdf,
+    sample_boundary_sdf,
+    project_to_boundary,
+    outward_normal,
+    sdf_ball,
+    sdf_disk,
+    sdf_box,
+    sdf_annulus,
+    sdf_lshape,
+    sdf_flower,
+    sdf_polygon,
+    sdf_tokamak,
+    sdf_union,
+    sdf_intersection,
+    sdf_difference,
+    sdf_complement,
 )
 from fastlsq.diagnostics import check_problem, check_solver_conditioning, suggest_scale
 from fastlsq.export import (
@@ -55,7 +75,7 @@ from fastlsq.export import (
 from fastlsq import viz
 from fastlsq import benchmark
 
-__version__ = "0.4.3"
+__version__ = "0.5.0"
 __all__ = [
     # Device selection (CPU / CUDA / Apple-MPS, dtype-aware)
     "resolve_device",
@@ -69,9 +89,13 @@ __all__ = [
     "Op",
     "IntegralOperator",
     "IntegroDifferentialOperator",
+    "SymbolOperator",
     "GaussianWindowedBasis",
     "ProjectionOperator",
     "FeatureBasis",
+    # Polynomial / DC augmentation columns
+    "AugmentedBasis",
+    "PolynomialColumns",
     # Vector-valued basis  (0.1.5)
     "VectorBasis",
     "VectorFastLSQSolver",
@@ -104,6 +128,24 @@ __all__ = [
     "sample_interval",
     "sample_boundary_box",
     "get_sampler",
+    # SDF / membership-oracle geometry
+    "SDFDomain",
+    "sample_sdf",
+    "sample_boundary_sdf",
+    "project_to_boundary",
+    "outward_normal",
+    "sdf_ball",
+    "sdf_disk",
+    "sdf_box",
+    "sdf_annulus",
+    "sdf_lshape",
+    "sdf_flower",
+    "sdf_polygon",
+    "sdf_tokamak",
+    "sdf_union",
+    "sdf_intersection",
+    "sdf_difference",
+    "sdf_complement",
     # Diagnostics
     "check_problem",
     "check_solver_conditioning",

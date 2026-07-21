@@ -2,6 +2,104 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [0.5.0] - 2026-07-21
+
+Closes three gaps between what the paper describes and what the package shipped:
+SDF geometry (§2.7), Fourier-symbol operators (§3.4), and explicit polynomial
+augmentation columns (§2.3).
+
+### Added
+
+- **SDF / membership-oracle geometry (`fastlsq.geometry`).** A domain can now be
+  given as any callable `ψ(x)` that is negative inside — no mesh, no analytic
+  sampler. `sample_sdf` rejection-samples the interior (unbiased, so the radial
+  CDF of a disk is exactly `r²`), `project_to_boundary` lands points on `ψ = 0`,
+  and `outward_normal` returns `∇ψ/‖∇ψ‖` via autograd, which is what a Neumann or
+  Robin condition needs. `SDFDomain` bundles these with a bounding box and CSG
+  composition (`|`, `&`, `-`), plus `neumann_rows` / `robin_rows` that contract
+  the analytic basis gradient against the normal into an `(M, N)` block.
+
+  Shipped domains: `disk`, `ball`, `box`, `annulus` (multiply-connected),
+  `lshape` (reentrant corner), `flower` (smooth non-convex), `polygon`, and
+  `tokamak` — the D-shaped Miller poloidal cross-section, at the same MAST-U
+  scale (`R ∈ [0.6, 1.4]`) as `examples/grad_shafranov.py`, which until now used
+  a plain rectangle.
+
+  Projection is **damped** Newton, `x ← x − ψ∇ψ/‖∇ψ‖²`, with per-point
+  backtracking and monotone acceptance. The `1/‖∇ψ‖²` normalisation matters:
+  the textbook `x − ψ∇ψ` is valid only for a true distance function, and
+  `sdf_flower` has `‖∇ψ‖` spanning 1 to ~10. Undamped, it left 
+  `|ψ| ≈ 1.5e-1` on the boundary; damped and monotone, 99.9% of interior seeds
+  converge to `1e-10`. The residual failures are seeds within `r < 0.2` of the
+  centre, where a non-distance `ψ` has no unique nearest boundary point;
+  `sample_boundary_sdf` filters them rather than hiding them.
+
+- **`SymbolOperator` — Fourier-multiplier (nonlocal) operators.** Every feature
+  is a plane wave, so a multiplier `L e^{iξ·x} = m(ξ) e^{iξ·x}` acts *diagonally*
+  on the basis: assembling `L` is a per-column rescale, exact to machine
+  precision, with no quadrature and no discretisation of the kernel. Operators
+  that are hard for mesh methods — the fractional Laplacian is nonlocal with a
+  singular kernel, giving a dense ill-conditioned FEM/FD matrix — cost exactly
+  what the Laplacian costs here.
+
+  Factories: `fractional_laplacian(s)`, `riesz_potential(s)`,
+  `riesz_transform(k)`, `convolution(k̂)`. The order `s` may be an
+  `nn.Parameter`: the symbol is `exp(s·log‖ξ‖²)`, so gradient descent recovers a
+  planted order (test recovers `s = 0.65` to `<1e-3`). Composes with `Op` and
+  `IntegralOperator` through the usual arithmetic.
+
+  Verified against independent references, not just self-consistency: `s=1`
+  reproduces `−Δ` and `s=2` reproduces `Δ²` bit-exactly; the symbol is checked
+  against the **singular-integral definition** including its normalising constant
+  `C(1,s)`; and Gaussian convolution matches direct quadrature to `<1e-8`.
+
+  `ConvolutionOperator` is `SymbolOperator.convolution(k̂)` — this is what
+  `examples/memory_diffusion.py:80` was doing by hand with a `(1, N)` broadcast
+  coefficient. That hand-rolled version uses `basis.W[0:1, :]`, correct only
+  because `d=2` has exactly one spatial axis; a symbol sees all of `W` and
+  generalises to any dimension.
+
+- **Polynomial / DC augmentation columns (`fastlsq.augment`).** `AugmentedBasis`
+  widens a basis with explicit `1, x, x², …` columns carrying **exact** operator
+  images — analytic monomial derivatives, antiderivatives (a negative multi-index
+  integrates: `x^p → x^{p+1}/(p+1)`), and Cauchy iterated integrals — not a
+  zero-derivative stub. It implements the same duck-typed protocol as
+  `SinusoidalBasis`, so `Op`, `IntegralOperator` and `SymbolOperator` all work
+  unchanged and return `(M, N + n_cols)`.
+
+  This is what §2.3 means by an integration constant "pinned by an explicit
+  polynomial column"; previously the only such column in the repo was hand-rolled
+  in `examples/extras/scenarios/s01_beamloss_ode.py`, which had to maintain its
+  derivative block by hand.
+
+  Scope, honestly: a sinusoidal bank with random phases can already approximate a
+  constant from near-DC features, so this is an improvement, not a rescue — on
+  `u'' = f` with a DC offset it is neutral at `C = 0` and ~12× better at
+  `C = 1000`. A non-constant monomial has no function-valued Fourier-multiplier
+  image, so `SymbolOperator` on `degree > 0` columns raises rather than inventing
+  a value.
+
+### Fixed
+
+- **`ProjectionOperator`'s docstring claimed the Fourier-symbol operators were
+  "already in the package".** They were not, until this release. It now points at
+  `SymbolOperator` and states the actual distinction (a symbol acts diagonally;
+  a projection row mixes features).
+
+### Notes
+
+- **Which fractional Laplacian.** The symbol calculus applies the multiplier to
+  the global plane-wave extension of the trial function, so
+  `fractional_laplacian` is the **whole-space (restricted)** `(−Δ)^s` on `R^d`,
+  *not* the spectral or regional variant defined by an eigenbasis of a bounded
+  domain. These coincide on `R^d` and differ on a bounded domain. Results should
+  not be read as the spectral fractional Laplacian.
+
+- Boundary points from `sample_boundary_sdf` are **not** uniform with respect to
+  surface measure — they are the pushforward of the uniform box measure under the
+  projection, which over-weights convex bulges. Fine for collocation; do not use
+  them as quadrature nodes for a surface integral without reweighting.
+
 ## [0.4.3] - 2026-07-20
 
 ### Fixed
