@@ -17,6 +17,7 @@ from fastlsq.basis import (
     DiffOperator,
     Op,
     IntegralOperator,
+    MultiIntegralOperator,
     IntegroDifferentialOperator,
     SymbolOperator,
     GaussianWindowedBasis,
@@ -24,6 +25,11 @@ from fastlsq.basis import (
     FeatureBasis,
 )
 from fastlsq.augment import AugmentedBasis, PolynomialColumns
+from fastlsq.kernels import (
+    SeparableKernelOperator,
+    fredholm_second_kind,
+    degenerate_eigenvalues,
+)
 from fastlsq.solvers import FastLSQSolver, PIELMSolver
 from fastlsq.vector  import VectorBasis, VectorFastLSQSolver
 from fastlsq.linalg import solve_lstsq
@@ -75,7 +81,7 @@ from fastlsq.export import (
 from fastlsq import viz
 from fastlsq import benchmark
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 __all__ = [
     # Device selection (CPU / CUDA / Apple-MPS, dtype-aware)
     "resolve_device",
@@ -88,8 +94,13 @@ __all__ = [
     "DiffOperator",
     "Op",
     "IntegralOperator",
+    "MultiIntegralOperator",
     "IntegroDifferentialOperator",
     "SymbolOperator",
+    # Separable kernels / Fredholm integral equations
+    "SeparableKernelOperator",
+    "fredholm_second_kind",
+    "degenerate_eigenvalues",
     "GaussianWindowedBasis",
     "ProjectionOperator",
     "FeatureBasis",

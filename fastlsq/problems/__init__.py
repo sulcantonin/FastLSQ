@@ -10,6 +10,10 @@ from fastlsq.problems.linear import (
 from fastlsq.problems.nonlinear import (
     NLPoisson2D, Bratu2D, SteadyBurgers1D, NLHelmholtz2D, AllenCahn1D,
 )
+from fastlsq.problems.integral import (
+    FredholmProductKernel, FredholmRank2Kernel, VolterraSecondKind,
+    IntegroDifferentialODE,
+)
 from fastlsq.problems.regression import (
     Burgers1D_Regression, KdV_Regression, ReactionDiffusion_Regression,
     SineGordon_Regression, KleinGordon_Regression, GrayScott_Pulse,
@@ -28,6 +32,9 @@ __all__ = [
     # Nonlinear (Newton solver mode)
     "NLPoisson2D", "Bratu2D", "SteadyBurgers1D", "NLHelmholtz2D",
     "AllenCahn1D",
+    # Integral / integro-differential (solver mode)
+    "FredholmProductKernel", "FredholmRank2Kernel", "VolterraSecondKind",
+    "IntegroDifferentialODE",
     # Regression (data fitting)
     "Burgers1D_Regression", "KdV_Regression", "ReactionDiffusion_Regression",
     "SineGordon_Regression", "KleinGordon_Regression", "GrayScott_Pulse",

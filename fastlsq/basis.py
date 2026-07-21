@@ -374,6 +374,87 @@ class SinusoidalBasis:
         out = delta * torch.sin(half_sum) * torch.sinc(sinc_arg)
         return out * self._inv_norm
 
+    def multi_integral(
+        self,
+        x: torch.Tensor,
+        dims: Sequence[int],
+        lowers: Sequence[float],
+        uppers: Optional[Sequence[Optional[float]]] = None,
+        cache: Optional[BasisCache] = None,
+    ) -> torch.Tensor:
+        """Simultaneous integral over **several** axes, in closed form -> (M, N).
+
+        Generalises :meth:`definite_integral` from one axis to any subset.  Each
+        axis may independently be definite (numeric ``upper``) or **Volterra**
+        (``upper=None``, running to ``x[:, k]``), so a mixed space-time operator
+        such as "definite over x, running in t" is a single call.
+
+        The plane wave factorises over axes -- ``e^{i W·x} = ∏_k e^{i W_k x_k}`` --
+        so the multi-axis integral is a *product* of the same stable one-axis
+        factors, and the phase collapses to the value at the per-axis midpoint::
+
+            ∫∫ φ_j ∏_{k∈S} dx_k = [∏_{k∈S} Δ_k · sinc(W_k Δ_k / 2π)] · sin(Z_mid)
+
+        where ``Δ_k = hi_k − lo_k`` and ``Z_mid`` is ``Z`` evaluated with each
+        integrated axis held at ``(lo_k + hi_k)/2``.  With ``|S| = 1`` this is
+        exactly :meth:`definite_integral`.
+
+        Exact, quadrature-free, and finite for near-DC features on every axis
+        (``torch.sinc`` handles ``W_k → 0``, where the factor tends to ``Δ_k``).
+
+        Parameters
+        ----------
+        x : Tensor, shape (M, d)
+        dims : sequence of int
+            Axes to integrate over.  Must be distinct.
+        lowers : sequence of float
+            Lower limit per entry of ``dims``.
+        uppers : sequence of (float or None), optional
+            Upper limit per entry of ``dims``; ``None`` means Volterra along that
+            axis.  Default: all Volterra.
+        cache : BasisCache, optional
+            Accepted for API symmetry and unused -- the phase is required at the
+            midpoints, not at ``x``.
+
+        Returns
+        -------
+        Tensor, shape (M, N)
+        """
+        if x.dtype != self.W.dtype or x.device != self.W.device:
+            x = x.to(dtype=self.W.dtype, device=self.W.device)
+
+        dims = list(dims)
+        if len(set(dims)) != len(dims):
+            raise ValueError(f"multi_integral: dims must be distinct, got {dims}")
+        lowers = list(lowers)
+        if len(lowers) != len(dims):
+            raise ValueError("multi_integral: lowers must have one entry per dim")
+        if uppers is None:
+            uppers = [None] * len(dims)
+        uppers = list(uppers)
+        if len(uppers) != len(dims):
+            raise ValueError("multi_integral: uppers must have one entry per dim")
+
+        x_mid = x.clone()
+        amp = torch.ones(
+            x.shape[0], self.n_features, device=self.W.device, dtype=self.W.dtype
+        )
+        for k, lo, up in zip(dims, lowers, uppers):
+            Wk = self.W[k : k + 1, :]                       # (1, N)
+            if up is None:
+                hi = x[:, k : k + 1]                        # (M, 1) running limit
+            else:
+                hi = torch.full(
+                    (x.shape[0], 1), float(up),
+                    device=self.W.device, dtype=self.W.dtype,
+                )
+            delta = hi - float(lo)                          # (M, 1)
+            x_mid[:, k] = (0.5 * (float(lo) + hi)).reshape(-1)
+            amp = amp * delta * torch.sinc((Wk * delta) / (2.0 * np.pi))
+
+        Z_mid = self.cache(x_mid).Z
+        return (amp * torch.sin(Z_mid)) * self._inv_norm
+
     def iterated_integral(
         self,
         x: torch.Tensor,
@@ -875,10 +956,9 @@ class DiffOperator:
     def __add__(self, other):
         if isinstance(other, DiffOperator):
             return DiffOperator(self.terms + other.terms)
-        if isinstance(
-            other, (IntegralOperator, SymbolOperator, IntegroDifferentialOperator)
-        ):
-            # Mixing differential with integral / multiplier terms -> integro-differential.
+        # Mixing differential with integral / multiplier / kernel terms ->
+        # integro-differential.  Duck-typed on .apply, see _as_terms.
+        if callable(getattr(other, "apply", None)):
             return IntegroDifferentialOperator([(1.0, self)]) + other
         return NotImplemented
 
@@ -1154,6 +1234,107 @@ class IntegralOperator:
 
 
 # ======================================================================
+# MultiIntegralOperator: closed-form integration over several axes at once
+# ======================================================================
+
+class MultiIntegralOperator:
+    """Closed-form integral over **several** axes simultaneously.
+
+    :class:`IntegralOperator` handles one axis; this handles any subset, with
+    each axis independently definite or Volterra.  That covers the operators a
+    single-axis integral cannot express -- an area/volume average, a
+    space-and-time accumulated load, or a mixed "definite in space, running in
+    time" memory term::
+
+        >>> # (Au)(x) = ∫₀¹∫₀¹ u dx₀ dx₁   -- a scalar functional of u
+        >>> A = MultiIntegralOperator.definite(dims=[0, 1], lowers=[0, 0],
+        ...                                    uppers=[1, 1], d=2)
+        >>> # running in both axes (2-D Volterra)
+        >>> V = MultiIntegralOperator.volterra(dims=[0, 1], lowers=[0, 0], d=2)
+        >>> # definite over space, running in time
+        >>> M = MultiIntegralOperator(dims=[0, 1], lowers=[0.0, 0.0],
+        ...                           uppers=[1.0, None], d=2)
+
+    Exact and quadrature-free: the plane wave factorises over axes, so the
+    result is a product of the same numerically stable one-axis factors used by
+    :meth:`SinusoidalBasis.definite_integral`.  See
+    :meth:`SinusoidalBasis.multi_integral`.
+
+    Composes with differential, symbol and single-axis integral terms through
+    the usual arithmetic.
+
+    Scope
+    -----
+    Order is **1 per axis**.  A repeated (``order=n``) integral along a single
+    axis is :class:`IntegralOperator`, whose Cauchy/Taylor branches handle the
+    small-``W`` cancellation that a naive repeated product would suffer; there
+    is no combined "n-fold along several axes" path.
+    """
+
+    def __init__(
+        self,
+        dims: Sequence[int],
+        lowers: Sequence[float],
+        d: int,
+        uppers: Optional[Sequence[Optional[float]]] = None,
+    ):
+        self.dims = list(dims)
+        self.lowers = list(lowers)
+        self.uppers = list(uppers) if uppers is not None else [None] * len(self.dims)
+        self.d = d
+
+    @classmethod
+    def definite(
+        cls, dims: Sequence[int], lowers: Sequence[float],
+        uppers: Sequence[float], d: int,
+    ) -> MultiIntegralOperator:
+        """Definite integral over a box in the given axes."""
+        return cls(dims=dims, lowers=lowers, uppers=uppers, d=d)
+
+    @classmethod
+    def volterra(
+        cls, dims: Sequence[int], lowers: Sequence[float], d: int
+    ) -> MultiIntegralOperator:
+        """Running (Volterra) integral in every given axis."""
+        return cls(dims=dims, lowers=lowers, uppers=None, d=d)
+
+    def apply(
+        self,
+        basis: SinusoidalBasis,
+        x: torch.Tensor,
+        cache: Optional[BasisCache] = None,
+    ) -> torch.Tensor:
+        return basis.multi_integral(
+            x, self.dims, self.lowers, uppers=self.uppers, cache=cache
+        )
+
+    # Arithmetic composition -> IntegroDifferentialOperator
+    def __add__(self, other):
+        return IntegroDifferentialOperator([(1.0, self)]).__add__(other)
+
+    def __radd__(self, other):
+        return IntegroDifferentialOperator([(1.0, self)]).__radd__(other)
+
+    def __sub__(self, other):
+        return self.__add__(-other)
+
+    def __neg__(self):
+        return IntegroDifferentialOperator([(-1.0, self)])
+
+    def __mul__(self, scalar: CoeffT):
+        return IntegroDifferentialOperator([(scalar, self)])
+
+    __rmul__ = __mul__
+
+    def __repr__(self) -> str:
+        parts = []
+        for k, lo, up in zip(self.dims, self.lowers, self.uppers):
+            hi = f"x_{k}" if up is None else f"{up}"
+            parts.append(f"∫_{lo}^{hi} d x_{k}")
+        return "MultiIntegralOperator(" + " ".join(parts) + ")"
+
+
+# ======================================================================
 # SymbolOperator: Fourier-multiplier (nonlocal / convolution) operators
 # ======================================================================
 
@@ -1377,9 +1558,16 @@ class IntegroDifferentialOperator:
 
     @staticmethod
     def _as_terms(other):
+        """Wrap any operator-shaped object as a term list.
+
+        Membership is **duck-typed** on ``.apply(basis, x, cache)`` rather than a
+        fixed isinstance tuple, so operators defined in other modules (e.g.
+        :class:`~fastlsq.kernels.SeparableKernelOperator`) compose with the
+        built-ins without this module having to import them.
+        """
         if isinstance(other, IntegroDifferentialOperator):
             return list(other.terms)
-        if isinstance(other, (DiffOperator, IntegralOperator, SymbolOperator)):
+        if callable(getattr(other, "apply", None)):
             return [(1.0, other)]
         return None
 

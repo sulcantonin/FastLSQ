@@ -144,6 +144,57 @@ K = SymbolOperator.convolution(lambda W: torch.exp(-(W**2).sum(0, keepdim=True) 
 `(−Δ)^s`, not the spectral variant defined on a bounded domain -- the two differ
 once the domain is bounded.
 
+### Integral equations (Fredholm, Volterra, separable kernels)
+
+A separable kernel `K(x,y) = Σ g_m(x) h_m(y)` collapses the integral operator to
+`Σ_m g_m(x) ∫ h_m u`, so acting on the basis needs only an `R × N` matrix of
+inner products, computed once. A Fredholm equation of the second kind is then
+one linear least squares like everything else:
+
+```python
+from fastlsq import SeparableKernelOperator, fredholm_second_kind, degenerate_eigenvalues
+
+# u(x) − λ ∫₀¹ x y u(y) dy = f(x)
+K = SeparableKernelOperator([lambda x: x[:, 0]],      # g_m
+                            [lambda y: y[:, 0]],      # h_m
+                            lower=0.0, upper=1.0, d=1)
+
+print(degenerate_eigenvalues(K, basis))    # λ where the equation is singular → 3.0
+print(K.check_quadrature(basis))           # are the inner products resolved?
+
+L = fredholm_second_kind(K, lam=0.5, d=1)
+beta = solve_lstsq(L.apply(basis, x), f(x))
+```
+
+Second-kind equations need **no boundary rows** — the identity term makes them
+well posed on its own. Integration over several axes at once (definite, running,
+or mixed) is `MultiIntegralOperator`:
+
+```python
+from fastlsq import MultiIntegralOperator
+
+area = MultiIntegralOperator.definite([0, 1], [0, 0], [1, 1], d=2)   # ∫∫ over a box
+memory = MultiIntegralOperator([0, 1], [0.0, 0.0], d=2, uppers=[1.0, None])  # definite × running
+```
+
+Ready-made problems with closed-form solutions live in `fastlsq.problems` and run
+through `solve_linear` like the PDEs (`PYTHONPATH=. python3
+examples/integral_equations.py`, 300 features, 2000 collocation points):
+
+| Problem | rel L2 | grad rel L2 | boundary rows |
+|---|---|---|---|
+| `FredholmProductKernel(lam=0.5)` | 5.5e-14 | 5.7e-12 | 0 |
+| `FredholmProductKernel(lam=2.0)` | 3.8e-13 | 3.9e-11 | 0 |
+| `FredholmRank2Kernel(lam=0.4)` | 9.1e-14 | 9.5e-12 | 0 |
+| `VolterraSecondKind(lam=1.5)` | 8.8e-13 | 1.0e-10 | 0 |
+| `IntegroDifferentialODE(lam=4.0)` | 6.2e-16 | 1.7e-14 | 1 |
+
+Errors are against the **closed-form** solutions (degenerate-kernel theory for
+the Fredholm cases, the equivalent ODE for the Volterra ones), not a reference
+quadrature. Accuracy degrades gracefully toward the kernel's singular value --
+for `K = xy`, whose only characteristic value is `λ = 3`, the error moves from
+5.5e-14 at `λ = 0.5` to 3.9e-12 at `λ = 2.99`.
+
 ### Complex geometry without a mesh
 
 A domain is any callable that is negative inside. Interior points come from
@@ -282,6 +333,8 @@ derivative engine:
 | `BasisCache` | Pre-computes sin(Z)/cos(Z) once, reuses across multiple derivative evaluations |
 | `DiffOperator` / `Op` | Symbolic linear differential operators that compose via +, -, scalar *; coefficients can be `nn.Parameter` for learnable PDEs |
 | `IntegralOperator` / `IntegroDifferentialOperator` | Closed-form **single-axis** definite / running (Volterra) integrals, including `order=n` **iterated** integrals `∫_lo^x (x−t)^{n−1}/(n−1)! φ dt`; compose with `Op` into one integro-differential design matrix |
+| `MultiIntegralOperator` | Closed-form integration over **several axes at once**, each independently definite or Volterra -- area/volume functionals and mixed "definite in space, running in time" memory terms. The plane wave factorises over axes, so it is a product of the same stable one-axis factors |
+| `SeparableKernelOperator` | Separable (degenerate) kernels `K(x,y) = Σ g_m(x) h_m(y)`, assembled as a rank-`R` product `G @ C` with the inner products `C` precomputed once. With `fredholm_second_kind` this makes `u − λ∫K u = f` one linear least squares |
 | `SymbolOperator` | **Fourier-multiplier (nonlocal)** operators `L e^{iξ·x} = m(ξ) e^{iξ·x}`. Features *are* plane waves, so the symbol acts diagonally -- a per-column rescale, exact, no quadrature. Ships `fractional_laplacian(s)` (with learnable `s`), `riesz_potential`, `riesz_transform`, `convolution(k̂)` |
 | `GaussianWindowedBasis` / `ProjectionOperator` | Windowed-Fourier (Gabor) basis + closed-form **projection (Radon)** operator `∫ f δ(c·z−u) dz` for tomographic / line-integral inverse problems; quadrature-free and differentiable in the optics `c` |
 | `AugmentedBasis` / `PolynomialColumns` | Widens a basis with explicit `1, x, x², …` columns carrying **exact** operator images, to pin integration constants and DC modes that leave the sinusoidal family. Transparent to every operator |
@@ -376,6 +429,7 @@ See `examples/add_your_own_pde.py` for the complete tutorial.
 - **Analytical derivative engine**: `SinusoidalBasis` computes arbitrary-order derivatives exactly in O(1) -- the foundation of the entire framework
 - **Symbolic PDE operators**: Compose differential operators with `Op` (Laplacian, wave, Helmholtz, biharmonic, custom) via intuitive arithmetic; coefficients can be `nn.Parameter` for AdamW optimisation
 - **Closed-form integral operators**: `IntegralOperator` (single-axis definite / Volterra integrals) composes with `Op` into one integro-differential least-squares block. The integral class now also includes the **projection (Radon) operator** (`ProjectionOperator` on a `GaussianWindowedBasis`) -- quadrature-free `∫ f δ(c·z−u) dz` line/hyperplane integrals for tomographic inverse problems, differentiable in the optics `c` for experiment design
+- **Integral equations**: Separable (degenerate) kernels `K = Σ g_m(x) h_m(y)` assemble as a rank-`R` product with inner products precomputed once, so a Fredholm equation of the second kind `u − λ∫K u = f` is a single linear least squares needing **no boundary rows**. `degenerate_eigenvalues` reports the `λ` at which the equation is singular and `check_quadrature` whether the inner products are resolved -- both otherwise-silent failure modes. `MultiIntegralOperator` integrates over several axes at once, each independently definite or Volterra
 - **Nonlocal / Fourier-symbol operators**: `SymbolOperator` assembles any multiplier `m(ξ)` as a per-column rescale -- exact, quadrature-free, and the same cost as the Laplacian. Covers the **fractional Laplacian** `(−Δ)^s` (with a *learnable* order `s`), Riesz potentials and transforms, and **convolution** `k * u` from the kernel transform `k̂`. Operators whose kernels are singular and nonlocal -- dense, ill-conditioned matrices for FEM/FD -- are diagonal here
 - **Vector-valued solutions**: First-class support for **u**: ℝᵈ → ℝᵏ (elasticity, Stokes, Maxwell). Problems declare `n_outputs = k`; `block_concat` assembles coupled block systems; `solver.predict(x)` returns shape `(M, k)`. Scalar problems are the `k=1` case
 - **Augmentation columns**: `AugmentedBasis` + `PolynomialColumns` widen the basis with exact `1, x, x², …` columns to pin integration constants and DC modes that leave the sinusoidal family -- transparent to every operator
