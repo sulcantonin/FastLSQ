@@ -196,16 +196,27 @@ class PolynomialColumns:
         exactly, with no quadrature.  Other axes keep their monomial factors
         evaluated at ``x``.
         """
+        return self._integral_factor(x, dim, lower, upper, order) \
+            * self._monomials(x, self._exponents_without(x.device, [dim]))
+
+    def _exponents_without(self, device, dims):
+        """The exponent table with the listed axes zeroed (the factors NOT integrated)."""
+        other = self.exponents.to(device).clone()
+        for k in dims:
+            other[:, k] = 0
+        return other
+
+    def _integral_factor(self, x, dim, lower, upper=None, order=1):
+        """(M, n): the contribution of ONE axis to an iterated integral.
+
+        Split out of :meth:`iterated_integral` so that the multi-axis integral can
+        multiply one factor per integrated axis instead of repeating the expansion.
+        """
         beta = self.exponents.to(x.device)                       # (n, d)
         u = (upper if upper is not None else x[:, dim])
         if not torch.is_tensor(u):
             u = torch.full((x.shape[0],), float(u), device=x.device, dtype=x.dtype)
         du = (u - lower).unsqueeze(1)                            # (M, 1)
-
-        # Factors from the axes that are NOT integrated.
-        other = beta.clone()
-        other[:, dim] = 0
-        rest = self._monomials(x, other)                         # (M, n)
 
         p = beta[:, dim]                                         # (n,)
         out = torch.zeros(x.shape[0], self.n_columns, device=x.device, dtype=x.dtype)
@@ -223,7 +234,55 @@ class PolynomialColumns:
             )
             scale = math.factorial(j) / math.factorial(j + order)
             out = out + (mask * comb * lo_pow * scale).unsqueeze(0) * du ** (j + order)
-        return out * rest
+        return out
+
+    def multi_integral(self, x, dims, lowers, uppers=None) -> torch.Tensor:
+        """Simultaneous integral over several axes -> (M, n_cols).
+
+        A monomial factorises across axes, so the multi-axis integral is the product of
+        the one-axis factors times the monomials of the axes left alone.
+        """
+        dims = list(dims)
+        lowers = list(lowers)
+        uppers = list(uppers) if uppers is not None else [None] * len(dims)
+        out = None
+        for k, lo, up in zip(dims, lowers, uppers):
+            f = self._integral_factor(x, k, lo, up, order=1)
+            out = f if out is None else out * f
+        rest = self._monomials(x, self._exponents_without(x.device, dims))
+        return (out if out is not None else 1.0) * rest
+
+    def hessian_diag(self, x: torch.Tensor) -> torch.Tensor:
+        """∂²/∂x_k² of every column, for every axis -> (M, d, n_cols)."""
+        d = self.exponents.shape[1]
+        rows = []
+        for k in range(d):
+            a = [0] * d
+            a[k] = 2
+            rows.append(self.derivative(x, a))
+        return torch.stack(rows, dim=1)
+
+    def biharmonic(self, x: torch.Tensor, dims=None) -> torch.Tensor:
+        """Δ²  = Σ_{i,j} ∂²_i ∂²_j of every column -> (M, n_cols)."""
+        d = self.exponents.shape[1]
+        axes = list(range(d)) if dims is None else list(dims)
+        out = None
+        for i in axes:
+            for j in axes:
+                a = [0] * d
+                a[i] += 2
+                a[j] += 2
+                term = self.derivative(x, a)
+                out = term if out is None else out + term
+        return out
+
+    def advection(self, x: torch.Tensor, v) -> torch.Tensor:
+        """(v · ∇) of every column -> (M, n_cols)."""
+        g = self.gradient(x)                                     # (M, d, n_cols)
+        v = torch.as_tensor(v, device=x.device, dtype=x.dtype)
+        if v.dim() == 1:
+            v = v.reshape(1, -1)
+        return (v.unsqueeze(-1) * g).sum(dim=1)
 
     def definite_integral(
         self,
@@ -386,6 +445,42 @@ class AugmentedBasis:
             term = self.columns.derivative(xx, a)
             poly = term if poly is None else poly + term
         return torch.cat([self.basis.laplacian(x, dims=dims, cache=inner), poly], dim=1)
+
+    def hessian_diag(self, x: torch.Tensor, cache=None) -> torch.Tensor:
+        """``∂²φ/∂x_k²`` for every axis and every column -> ``(M, d, n_features)``."""
+        inner, _ = self._parts(cache)
+        return torch.cat(
+            [self.basis.hessian_diag(x, cache=inner),
+             self.columns.hessian_diag(self._x(x, cache))],
+            dim=2,
+        )
+
+    def biharmonic(self, x: torch.Tensor, dims=None, cache=None) -> torch.Tensor:
+        """``Δ²`` of both blocks -> ``(M, n_features)``."""
+        inner, _ = self._parts(cache)
+        return torch.cat(
+            [self.basis.biharmonic(x, dims=dims, cache=inner),
+             self.columns.biharmonic(self._x(x, cache), dims=dims)],
+            dim=1,
+        )
+
+    def advection(self, x: torch.Tensor, v, cache=None) -> torch.Tensor:
+        """``(v · ∇)`` of both blocks -> ``(M, n_features)``."""
+        inner, _ = self._parts(cache)
+        return torch.cat(
+            [self.basis.advection(x, v, cache=inner),
+             self.columns.advection(self._x(x, cache), v)],
+            dim=1,
+        )
+
+    def multi_integral(self, x, dims, lowers, uppers=None, cache=None) -> torch.Tensor:
+        """Simultaneous integral over several axes, both blocks -> ``(M, n_features)``."""
+        inner, _ = self._parts(cache)
+        return torch.cat(
+            [self.basis.multi_integral(x, dims, lowers, uppers=uppers, cache=inner),
+             self.columns.multi_integral(self._x(x, cache), dims, lowers, uppers=uppers)],
+            dim=1,
+        )
 
     def operator(self, x: torch.Tensor, terms, cache=None) -> torch.Tensor:
         """Mirror of :meth:`SinusoidalBasis.operator`, applied to both blocks."""

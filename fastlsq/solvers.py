@@ -46,8 +46,10 @@ class FastLSQSolver:
         """Append a block of random Fourier features."""
         W = torch.randn(self.input_dim, hidden_size, device=get_device())
 
-        if isinstance(scale, (list, np.ndarray)):
-            s = torch.tensor(scale, device=get_device(), dtype=W.dtype).unsqueeze(1)
+        if isinstance(scale, (list, tuple, np.ndarray, torch.Tensor)):
+            # per-axis bandwidth: any sequence of input_dim values (as_tensor, so a
+            # tensor argument is not copy-constructed with a warning)
+            s = torch.as_tensor(scale, device=get_device(), dtype=W.dtype).reshape(-1, 1)
             W = W * s
         else:
             W = W * scale
@@ -135,10 +137,10 @@ class PIELMSolver:
     def add_block(self, hidden_size=500, scale=1.0):
         W_base = torch.rand(self.input_dim, hidden_size, device=get_device()) * 2 - 1
 
-        if isinstance(scale, (list, np.ndarray)):
-            s = torch.tensor(scale, device=get_device(), dtype=W_base.dtype).unsqueeze(1)
+        if isinstance(scale, (list, tuple, np.ndarray, torch.Tensor)):
+            s = torch.as_tensor(scale, device=get_device(), dtype=W_base.dtype).reshape(-1, 1)
             W = W_base * s
-            b_scale = max(scale)
+            b_scale = float(s.max())
         else:
             W = W_base * scale
             b_scale = scale

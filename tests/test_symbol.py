@@ -16,6 +16,11 @@ than against the implementation:
 import math
 
 import numpy as np
+
+# np.trapz was removed in NumPy 2.0; np.trapezoid is the replacement (and exists from
+# NumPy 1.26).  Keep a fallback so the file also runs on an older NumPy.
+if not hasattr(np, "trapezoid"):                       # pragma: no cover
+    np.trapezoid = np.trapz
 import pytest
 import torch
 
@@ -93,11 +98,11 @@ def _int_one_minus_cos(s, n=2_000_000, t_split=1.0, t_max=4.0e4):
     t1 = v ** 4
     # 1 - cos t = 2 sin^2(t/2): avoids cancellation for small t.
     f1 = 4.0 * v ** 3 * 2.0 * np.sin(t1 / 2.0) ** 2 / t1 ** (1.0 + a)
-    near = np.trapz(f1, v)
+    near = np.trapezoid(f1, v)
 
     t2 = np.logspace(np.log10(t_split), np.log10(t_max), n // 2)
     f2 = (1.0 - np.cos(t2)) / t2 ** (1.0 + a)
-    far = np.trapz(f2, t2)
+    far = np.trapezoid(f2, t2)
 
     # Tail int_{t_max}^inf: the cos part averages out, leaving 1/(a t_max^a).
     tail = 1.0 / (a * t_max ** a)

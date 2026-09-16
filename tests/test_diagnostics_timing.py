@@ -38,11 +38,14 @@ def test_return_info_default_unchanged():
 def test_return_info_tuple_and_keys():
     A, b = _ls_system()
     x, info = solve_lstsq(A, b, return_info=True)
-    assert set(info) == {"t_solve", "rank_used", "residual", "cond_estimate"}
+    assert set(info) == {"t_solve", "rank_used", "residual", "cond_estimate",
+                         "method_used"}
     assert info["t_solve"] >= 0.0
     assert 0 < info["rank_used"] <= A.shape[1]
     assert info["residual"] >= 0.0
     assert info["cond_estimate"] >= 1.0
+    # 'auto' picks its back-end at run time; the dict must say which one ran.
+    assert info["method_used"] in {"cholesky", "qr", "svd", "rsvd"}
 
 
 def test_return_info_x_matches_plain_solve():

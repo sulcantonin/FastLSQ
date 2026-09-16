@@ -59,11 +59,18 @@ def newton_solve(solver, problem, x_pde, bcs, f_pde,
                  damping=1.0, mu=1e-10, verbose=True):
     """Newton-Raphson iteration with Tikhonov-regularised Fast-LSQ steps.
 
-    Convergence is checked via two criteria (both must be small):
+    Convergence is checked via two criteria (either one stops the iteration):
 
-    1. Residual norm:             ||R|| < tol_res
+    1. Residual norm, RELATIVE to the first residual:  ||R|| < tol_res * ||R_0||
     2. Relative solution change:  ||du|| / ||u|| < tol_du
        computed at collocation points (not via ||d_beta||).
+
+    The line search is Armijo backtracking from ``damping``.  If no backtracked step is
+    accepted the iterate is restored and the iteration STOPS: the Jacobian and residual
+    would be identical on the next sweep, so continuing just recomputes the same rejected
+    step until ``max_iter``.  That case is recorded in the history as
+    ``{"step_size": 0.0, "line_search": "rejected"}`` and the last entry carries
+    ``"stop"``, so the caller can tell a converged run from a stalled one.
 
     Parameters
     ----------
@@ -111,14 +118,16 @@ def newton_solve(solver, problem, x_pde, bcs, f_pde,
         alpha = damping
         beta_old = solver.beta.clone()
 
+        accepted = False
         for _ in range(10):
             solver.beta = beta_old + alpha * delta_beta
             _, new_neg_R = problem.build_newton_step(solver, x_pde, bcs, f_pde)
             new_res = torch.norm(new_neg_R).item()
             if new_res < res_norm * (1.0 - 1e-4 * alpha) + 1e-15:
+                accepted = True
                 break
             alpha *= 0.5
-        else:
+        if not accepted:
             # No backtracked step satisfied the Armijo condition; reject the
             # step and keep the previous iterate rather than committing a
             # point that may be worse than where we started.
@@ -127,14 +136,28 @@ def newton_solve(solver, problem, x_pde, bcs, f_pde,
         history.append({
             "iter": it, "residual": res_norm,
             "rel_du": rel_du, "du_norm": du_norm,
-            "step_size": alpha,
+            # 0.0 marks a REJECTED step: no move was taken.  Recording the last
+            # alpha the search tried would read as if that step had been accepted.
+            "step_size": alpha if accepted else 0.0,
+            "line_search": "accepted" if accepted else "rejected",
         })
 
         if verbose:
-            print(f"  Newton {it:2d}: |R|={res_norm:.2e}  "
-                  f"|du|/|u|={rel_du:.2e}  alpha={alpha:.3f}")
+            print(f"  Newton {it:2d}: |R|={res_norm:.2e}  |du|/|u|={rel_du:.2e}  "
+                  + (f"alpha={alpha:.3f}" if accepted else "step REJECTED"))
+
+        if not accepted:
+            # Nothing moved, so the next sweep would build the same J and R and reject
+            # the same step: stop instead of spinning to max_iter.
+            history[-1]["stop"] = "line_search_rejected"
+            if verbose:
+                print(f"  Stopped at iteration {it + 1}: no admissible step "
+                      f"(|R|={res_norm:.1e})")
+            break
 
         if res_norm < tol_res * R0 or rel_du < tol_du:
+            history[-1]["stop"] = ("residual" if res_norm < tol_res * R0
+                                   else "solution_change")
             if verbose:
                 print(f"  Converged in {it + 1} iterations "
                       f"(|R|={res_norm:.1e}, |du|/|u|={rel_du:.1e})")
