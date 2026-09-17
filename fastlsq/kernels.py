@@ -40,6 +40,8 @@ directly with :meth:`SeparableKernelOperator.from_inner_products`.
 
 from __future__ import annotations
 
+import weakref
+
 import numpy as np
 import torch
 from typing import Callable, Optional, Sequence, Union
@@ -136,6 +138,7 @@ class SeparableKernelOperator:
         self.n_quad = n_quad
         self._C: Optional[torch.Tensor] = None
         self._C_key = None
+        self._C_basis_ref = None                          # weakref to the cached basis
 
     @property
     def rank(self) -> int:
@@ -158,12 +161,36 @@ class SeparableKernelOperator:
         obj = cls(g_terms, [None] * len(g_terms), 0.0, 1.0, d=1, n_quad=0)
         obj._C = C
         obj._C_key = "analytic"
+        obj._analytic = True                              # no h_terms, no quadrature
         return obj
+
+    @staticmethod
+    def _basis_fingerprint(basis):
+        """A cache key that changes whenever the basis' numbers change.
+
+        ``id(basis)`` does not: a freed basis' address is reused by the next one (and
+        ``LearnableFastLSQ.basis`` builds a NEW basis object on every access), and an
+        in-place edit of the same basis keeps both its address and its feature count.
+        Either way the cached inner products would be silently wrong for the basis in
+        hand.  The storage pointer plus the autograd version counter of the parameter
+        tensors catches both, and we keep a weak reference so a reused address alone
+        can never produce a hit.
+        """
+        parts = [basis.n_features]
+        for name in ("W", "b"):
+            t = getattr(basis, name, None)
+            if isinstance(t, torch.Tensor):
+                parts.append((name, t.data_ptr(), t._version, tuple(t.shape),
+                              str(t.dtype), str(t.device)))
+        return tuple(parts)
 
     def inner_products(self, basis) -> torch.Tensor:
         """``C[m, j] = ∫_Ω h_m(y) φ_j(y) dy`` -> ``(R, N)``, computed once per basis."""
-        key = (id(basis), basis.n_features)
-        if self._C is not None and self._C_key in ("analytic", key):
+        if self._C is not None and self._C_key == "analytic":
+            return self._C
+        key = self._basis_fingerprint(basis)
+        cached = self._C_basis_ref() if self._C_basis_ref is not None else None
+        if self._C is not None and self._C_key == key and cached is basis:
             return self._C
 
         nodes, w = _tensor_gauss_legendre(
@@ -174,6 +201,10 @@ class SeparableKernelOperator:
         H = torch.stack([h(nodes).reshape(-1) for h in self.h_terms])  # (R, Q)
         self._C = (H * w) @ phi                           # (R, N)
         self._C_key = key
+        try:
+            self._C_basis_ref = weakref.ref(basis)
+        except TypeError:                                 # not weak-referenceable
+            self._C_basis_ref = lambda b=basis: b
         return self._C
 
     def check_quadrature(self, basis, refine: int = 2) -> float:
@@ -183,6 +214,11 @@ class SeparableKernelOperator:
         large one means ``n_quad`` does not resolve the feature oscillation and
         should be raised.  Returns the relative Frobenius difference.
         """
+        if getattr(self, "_analytic", False):
+            raise ValueError(
+                "check_quadrature() needs the h_terms and the quadrature rule, but this "
+                "operator was built by from_inner_products(), whose inner products are "
+                "analytic and exact -- there is nothing to refine.")
         coarse = self.inner_products(basis).clone()
         saved_C, saved_key, saved_n = self._C, self._C_key, self.n_quad
         self._C, self._C_key, self.n_quad = None, None, self.n_quad * refine
@@ -259,19 +295,30 @@ def fredholm_second_kind(
 
 
 def degenerate_eigenvalues(kernel: SeparableKernelOperator, basis) -> torch.Tensor:
-    """Characteristic values of a degenerate kernel, as seen by ``basis``.
+    """Characteristic values of a degenerate kernel.
 
     For ``K = Σ g_m h_m`` the eigenvalue problem ``φ = λ K φ`` reduces to the
     ``R × R`` matrix ``S_{mn} = ∫ h_m g_n``; the equation ``u − λKu = f`` is
     singular exactly at ``λ = 1/μ`` for ``μ`` an eigenvalue of ``S``.  Returns
     those ``1/μ`` (complex, as ``S`` need not be symmetric).
 
+    The values are a property of the KERNEL alone, not of the basis: ``basis`` is used
+    only for the device and dtype of the quadrature (and to keep the call signature that
+    reads naturally next to ``check_quadrature``).  Earlier versions also computed the
+    basis inner products here and then discarded them, which ran a full extra quadrature
+    for nothing.
+
     Use it to sanity-check a chosen ``λ``: a value close to one of these makes
     the second-kind problem ill posed, which shows up as a large residual rather
     than an obvious error.
     """
-    C = kernel.inner_products(basis)                      # (R, N) = ∫ h_m φ_j
-    # S[m, n] = ∫ h_m g_n, obtained by expanding g_n on the same quadrature.
+    if getattr(kernel, "_analytic", False):
+        raise ValueError(
+            "degenerate_eigenvalues() needs the h_terms to form S_{mn} = int h_m g_n, but "
+            "this operator was built by from_inner_products(), which stores only the "
+            "inner products against one basis.  Build the kernel with its h_terms to use "
+            "this diagnostic.")
+    # S[m, n] = ∫ h_m g_n, on the kernel's own quadrature.
     nodes, w = _tensor_gauss_legendre(
         kernel.lower, kernel.upper, kernel.d, kernel.n_quad,
         basis.W.device, basis.W.dtype,

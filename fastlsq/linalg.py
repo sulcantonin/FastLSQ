@@ -25,12 +25,16 @@ condition number -- leaving several orders of magnitude of accuracy on the floor
 * ``"rsvd"``     -- randomized SVD (range-finder + power iterations).  ``O(MNk)``
                     for a target ``rank`` k << N -- the cheap option for strongly
                     low-rank systems.
-* ``"auto"`` (default) -- try Cholesky; if the system is ill-conditioned (a
-                    cheap pivot-ratio test) use the faster ``"qr"``, and fall back
-                    to rank-revealing ``"svd"`` only if QR's solution blows up (the
-                    feature matrices can be rank-deficient).  Fast path when
-                    well-conditioned, QR speed/accuracy on the rest, SVD as the
-                    safety net.
+* ``"auto"`` (default) -- try Cholesky first (a cheap pivot-ratio test decides
+                    whether to keep its answer).  If the system is ill-conditioned the
+                    next step depends on where you are: **on CPU with no ridge it goes
+                    straight to** ``"svd"`` (LAPACK ``gelsd`` is both faster than
+                    Householder QR there and rank-deficient-safe), and otherwise it
+                    tries ``"qr"`` and falls back to ``"svd"`` if the QR solution blows
+                    up.  So a CPU call with ``mu = 0`` never runs QR under ``"auto"``;
+                    pass ``method="qr"`` if that is what you want.  The back-end that
+                    actually ran is reported as ``method_used`` in the ``return_info``
+                    dict.
 
 All back-ends are device/dtype-aware.  Apple-MPS lacks a robust ``svd``/``lstsq``,
 so the factorization is run on CPU and the result moved back (one-time warning).
@@ -49,6 +53,8 @@ _MPS_WARNED = False
 # (random-RHS) rank-deficient case measures ~3e14 -- so the guard is generous and
 # a false positive only costs speed, never correctness.
 _QR_AUTO_NORM_GUARD = 1e6
+# Relative floor on |R_ii| below which unpivoted QR is warned about as rank-deficient.
+_QR_RANK_RCOND = 1e-12
 
 
 def _maybe_cpu(A, b):
@@ -107,60 +113,87 @@ def _rsvd_solve(A, b, mu, rcond, rank, oversample, n_iter):
     return x, S                                    # S is the truncated (rank-k) spectrum
 
 
-def _qr_solve(A, b, mu):
+def _qr_solve(A, b, mu, rcond=None, warn=True):
     """Householder-QR least squares (ridge via [A; sqrt(mu) I] augmentation).
     Backward-stable at cond(A): SVD-grade accuracy with NO normal-equations
     squaring and no required ridge, at ~QR cost (cheaper than SVD).  Assumes
-    (numerically) full column rank; use method='svd' for a rank-deficient A."""
+    (numerically) full column rank; use method='svd' for a rank-deficient A.
+
+    Unpivoted QR cannot detect rank deficiency on its own, and on an exactly
+    rank-deficient inconsistent system it returns a wildly non-minimum-norm answer
+    (measured: ||x|| = 7e18 and residual 6e4 where the SVD gives 59 and 1e-8).  The
+    diagonal of R is the cheap tell, so we test it and warn rather than returning
+    that silently; set ``warn=False`` for callers with their own guard.
+    """
     if mu:
         n = A.shape[-1]
         A = torch.cat([A, (mu ** 0.5) * torch.eye(n, dtype=A.dtype, device=A.device)], dim=-2)
         b = torch.cat([b, torch.zeros(n, b.shape[-1], dtype=b.dtype, device=b.device)], dim=-2)
     Q, R = torch.linalg.qr(A, mode="reduced")
+    if warn:
+        d = torch.diagonal(R, dim1=-2, dim2=-1).abs()
+        dmax = d.max()
+        tol = (rcond if rcond is not None else _QR_RANK_RCOND) * dmax
+        if bool(dmax > 0) and bool((d <= tol).any()):
+            n_small = int((d <= tol).sum().item())
+            warnings.warn(
+                f"solve_lstsq(method='qr'): the QR factor R has {n_small} diagonal "
+                f"entr{'y' if n_small == 1 else 'ies'} below rcond*max|R_ii| "
+                f"({float(d.min() / dmax):.2e} <= {float(tol / dmax):.2e}), so A is "
+                "numerically rank-deficient and unpivoted QR gives no minimum-norm "
+                "guarantee.  Use method='svd' (or a ridge mu > 0).",
+                RuntimeWarning, stacklevel=3)
     return torch.linalg.solve_triangular(R, Q.transpose(-2, -1) @ b, upper=True)
 
 
 def _auto_solve(A, b, mu, rcond):
-    """Returns ``(x, S)``; ``S`` is the singular values only when the SVD safety
-    net is taken (the Cholesky / QR fast paths return ``None``)."""
+    """Returns ``(x, S, used)``; ``S`` is the singular values only when the SVD safety
+    net is taken (the Cholesky / QR fast paths return ``None``), and ``used`` names the
+    back-end that produced ``x``.
+
+    Note the CPU/no-ridge shortcut below: with ``mu == 0`` on CPU this routine never
+    runs QR at all, it goes Cholesky probe -> gelsd.  ``method_used`` in the
+    ``return_info`` dict is the only way to see which path a given call took.
+    """
     # Cheap conditioning probe: cond(A) ~ max/min Cholesky pivot.  If well within
     # float64's reach use the fast Cholesky.
     try:
         x, L = _cholesky_solve(A, b, mu)
         d = torch.diagonal(L).abs()
         if torch.isfinite(d).all() and d.min() > (rcond ** 0.25) * d.max():
-            return x, None
+            return x, None, "cholesky"
     except torch.linalg.LinAlgError:
         pass
     # Ill-conditioned.  On CPU with no ridge the LAPACK gelsd driver is both
     # faster than Householder QR *and* rank-deficient-safe, so go straight to it
     # -- the QR + blow-up-guard detour would only add a full extra factorization.
     if not mu and A.device.type == "cpu":
-        return _svd_solve(A, b, mu, rcond)
+        return (*_svd_solve(A, b, mu, rcond), "svd")
     # Otherwise (ridge, or non-CPU device) try the backward-stable QR.  On a
     # genuinely rank-deficient *inconsistent* A unpivoted QR can return a wildly
     # non-minimum-norm solution, so fall back to the rank-revealing SVD when the
     # QR solution blows up (or is non-finite).  See _QR_AUTO_NORM_GUARD.
-    x = _qr_solve(A, b, mu)
+    x = _qr_solve(A, b, mu, rcond=rcond, warn=False)      # this path has its own guard
     nx = torch.linalg.vector_norm(x)
     if torch.isfinite(nx) and nx <= _QR_AUTO_NORM_GUARD * (1.0 + torch.linalg.vector_norm(b)):
-        return x, None
-    return _svd_solve(A, b, mu, rcond)
+        return x, None, "qr"
+    return (*_svd_solve(A, b, mu, rcond), "svd")
 
 
 def _dispatch(A, b, mu, rcond, method, rank, oversample, n_iter):
-    """Run the requested back-end; returns ``(x, S)`` where ``S`` is the singular
-    values when the back-end already computed an SVD, else ``None``."""
+    """Run the requested back-end; returns ``(x, S, used)`` where ``S`` is the singular
+    values when the back-end already computed an SVD (else ``None``) and ``used`` is the
+    back-end that produced ``x`` (``method``, except under ``'auto'``)."""
     if method == "auto":
         return _auto_solve(A, b, mu, rcond)
     elif method == "svd":
-        return _svd_solve(A, b, mu, rcond)
+        return (*_svd_solve(A, b, mu, rcond), "svd")
     elif method == "qr":
-        return _qr_solve(A, b, mu), None
+        return _qr_solve(A, b, mu, rcond=rcond), None, "qr"
     elif method == "cholesky":
-        return _cholesky_solve(A, b, mu)[0], None
+        return _cholesky_solve(A, b, mu)[0], None, "cholesky"
     elif method == "rsvd":
-        return _rsvd_solve(A, b, mu, rcond, rank, oversample, n_iter)
+        return (*_rsvd_solve(A, b, mu, rcond, rank, oversample, n_iter), "rsvd")
     else:
         raise ValueError(f"Unknown method {method!r}; "
                          "choose 'auto', 'qr', 'svd', 'cholesky', or 'rsvd'.")
@@ -216,12 +249,12 @@ def solve_lstsq(A, b, mu=0.0, rcond=1e-12, method="auto",
     A2, b2, mps_dev = _maybe_cpu(A, b)
 
     if not return_info:
-        x, _ = _dispatch(A2, b2, mu, rcond, method, rank, oversample, n_iter)
+        x, _, _ = _dispatch(A2, b2, mu, rcond, method, rank, oversample, n_iter)
         return x.to(mps_dev) if mps_dev is not None else x
 
     _sync_device(A2.device)
     t0 = time.perf_counter()
-    x, S = _dispatch(A2, b2, mu, rcond, method, rank, oversample, n_iter)
+    x, S, method_used = _dispatch(A2, b2, mu, rcond, method, rank, oversample, n_iter)
     _sync_device(A2.device)
     t_solve = time.perf_counter() - t0
 
@@ -238,9 +271,16 @@ def solve_lstsq(A, b, mu=0.0, rcond=1e-12, method="auto",
     residual = float((A2 @ x - b2).norm().item())
     info = {
         "t_solve": t_solve,
+        # NOTE: a post-hoc numerical rank -- the number of singular values of A above
+        # rcond * sigma_max -- NOT the rank the back-end worked with.  'qr' and
+        # 'cholesky' use every column whatever this says; only 'svd' and 'rsvd'
+        # actually truncate at this tolerance.
         "rank_used": rank_used,
         "residual": residual,
         "cond_estimate": cond_estimate,
+        # Which back-end produced x.  Equals `method` unless method='auto', which
+        # picks between 'cholesky', 'svd' and 'qr' at run time.
+        "method_used": method_used,
     }
     x_out = x.to(mps_dev) if mps_dev is not None else x
     return x_out, info

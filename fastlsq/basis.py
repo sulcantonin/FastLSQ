@@ -136,7 +136,14 @@ class SinusoidalBasis:
     b : Tensor, shape (1, N)
         Bias / phase vector.
     normalize : bool
-        If True, all outputs are scaled by 1/√N.
+        If True, all outputs are scaled by ``1/√N`` -- the ONE convention used throughout
+        the package (some write the random-feature map with an extra ``√2``; this code
+        does not, and the difference is a constant factor that a direct least-squares
+        solve absorbs into the coefficients).  Note the entry points differ in their
+        default: ``solve_linear`` builds its solver with ``normalize=False`` and
+        ``solve_nonlinear`` with ``normalize=True``.  Either is fine for a QR or SVD
+        solve; it changes only the scale of ``beta`` and of a ridge ``mu`` relative to
+        the columns.
     dc_eps : float
         DC guard for *integration* (negative-order derivatives).  A feature whose
         frequency along an integrated axis satisfies ``|W_{jk}| <= dc_eps`` has no
@@ -765,6 +772,8 @@ class SinusoidalBasis:
 
         m_val = m(self.W) if callable(m) and not isinstance(m, torch.Tensor) else m
         m_val = torch.as_tensor(m_val, device=self.W.device)
+        if m_val.dim() == 0:                     # a scalar symbol is a constant multiplier
+            m_val = m_val.reshape(1, 1)
         if m_val.dim() == 1:
             m_val = m_val.reshape(1, -1)
         if m_val.dim() != 2 or m_val.shape[-1] not in (1, self.n_features):

@@ -215,13 +215,17 @@ class LearnableFastLSQ(nn.Module):
         kept as ``self._beta_flat`` (shape-compatible with ``A``) for residual
         losses, while ``self.beta`` is reshaped to ``(N, k)`` for prediction.
         """
+        # torch only accepts the rank-revealing LAPACK drivers ('gelsd'/'gelss'/'gelsy')
+        # on CPU; on CUDA/MPS lstsq is QR-based and rejects `driver`, so hard-coding gelsd
+        # here made the learnable path fail off CPU.  Leave it to torch's default there.
+        driver = "gelsd" if A.device.type == "cpu" else None
         if mu and mu > 0.0:
             n = A.shape[-1]
             A_aug = torch.cat([A, (mu ** 0.5) * torch.eye(n, dtype=A.dtype, device=A.device)], dim=0)
             b_aug = torch.cat([b, torch.zeros(n, b.shape[-1], dtype=b.dtype, device=b.device)], dim=0)
-            beta_flat = torch.linalg.lstsq(A_aug, b_aug, rcond=rcond, driver="gelsd").solution
+            beta_flat = torch.linalg.lstsq(A_aug, b_aug, rcond=rcond, driver=driver).solution
         else:
-            beta_flat = torch.linalg.lstsq(A, b, rcond=rcond, driver="gelsd").solution
+            beta_flat = torch.linalg.lstsq(A, b, rcond=rcond, driver=driver).solution
         self._beta_flat = beta_flat
         if self.n_outputs > 1:
             self.beta = unpack_beta(beta_flat, self.n_features, self.n_outputs)

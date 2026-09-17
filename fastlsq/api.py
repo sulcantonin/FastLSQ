@@ -193,10 +193,14 @@ def solve_linear(
             "scale_search_s": scale_search_s,
             "assemble_s": assemble_s,
             "solve_s": solve_s,
-            # Rank-revealing solve diagnostics (the paper's central mechanism).
+            # Conditioning diagnostics of the assembled system.  "rank_used" is the
+            # number of singular values above rcond * sigma_max -- a property of A, NOT
+            # the rank the back-end worked with (QR and Cholesky use every column).
+            # "method_used" says which back-end actually ran.
             "rank_used": solve_info["rank_used"],
             "residual": solve_info["residual"],
             "cond_estimate": solve_info["cond_estimate"],
+            "method_used": solve_info.get("method_used"),
         }
         if verbose:
             print(f"Value error: {val_err:.2e}, Gradient error: {grad_err:.2e}")
