@@ -71,18 +71,4 @@ python scripts/add_zenodo_doi.py 10.5281/zenodo.XXXXXXX --check   # preview
 python scripts/add_zenodo_doi.py 10.5281/zenodo.XXXXXXX           # write
 ```
 
-It patches `README.md`, `CITATION.cff`, `site/index.html` and `.zenodo.json`, and
-is idempotent — rerunning with a new DOI replaces rather than appends.
-
-## Site
-
-`site/` deploys to <https://sulcantonin.github.io/FastLSQ/> via
-`.github/workflows/pages.yml` on any push to `main` touching `site/**`.
-
-Two rules, both learned from the site this one replaced:
-
-- **Execute every code snippet against the released package before publishing it.**
-  The previous site's flagship example advertised `fl.solve(...)`, `fl.Box(...)`
-  and `SinusoidalBasis(d=2, N=1500, sigma=10.0)`; none of the three exist.
-- **Every number is script output, not assertion.** If a figure changes, rerun the
-  example and update the page from its stdout.
+It patches `README.md`, `CITATION.cff` and `.zenodo.json`, and is idempotent — rerunning with a new DOI replaces rather than appends.

@@ -10,7 +10,6 @@ authors:
     orcid: "https://orcid.org/0000-0001-7767-778X"
     affiliation: "Lawrence Berkeley National Laboratory, Berkeley, CA, United States"
 repository-code: "https://github.com/sulcantonin/FastLSQ"
-url: "https://sulcantonin.github.io/FastLSQ/"
 repository-artifact: "https://pypi.org/project/FastLSQ/"
 abstract: >-
   FastLSQ solves linear partial differential, integral and integro-differential
@@ -38,7 +37,7 @@ date-released: "2026-09-18"
 # Once the Zenodo DOI is minted, add it here so GitHub's "Cite this repository"
 # widget offers it.  Use the CONCEPT DOI (the one that always resolves to the
 # newest version), not a single version's DOI.  scripts/add_zenodo_doi.py does
-# this for you, along with the README, the site and .zenodo.json:
+# this for you, along with the README and .zenodo.json:
 #
 #     python scripts/add_zenodo_doi.py 10.5281/zenodo.XXXXXXX
 #
