@@ -5,6 +5,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/FastLSQ.svg)](https://pypi.org/project/FastLSQ/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![arXiv](https://img.shields.io/badge/arXiv-2602.10541-b31b1b.svg)](https://arxiv.org/abs/2602.10541)
+[![site](https://img.shields.io/badge/site-fastlsq.com-1f3df5.svg)](https://fastlsq.com)
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/sulcantonin/FastLSQ/main/misc/fastlsq_teaser.png" alt="FastLSQ method overview" width="400"/>
@@ -517,7 +518,7 @@ message.  See the *Release tags* note at the top of `CHANGELOG.md`.
 
 ## Paper
 
-The preprint is on [arXiv](https://arxiv.org/abs/2602.10541).  A software paper for the
+The project site, with interactive demos, is at [fastlsq.com](https://fastlsq.com). The preprint is on [arXiv](https://arxiv.org/abs/2602.10541).  A software paper for the
 [Journal of Open Source Software](https://joss.theoj.org/) is drafted in
 [`paper.md`](paper.md).
 

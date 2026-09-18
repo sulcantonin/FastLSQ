@@ -58,7 +58,7 @@ lightning = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/sulcantonin/FastLSQ"
+Homepage = "https://fastlsq.com"
 Repository = "https://github.com/sulcantonin/FastLSQ"
 Paper = "https://arxiv.org/abs/2602.10541"
 "Bug Tracker" = "https://github.com/sulcantonin/FastLSQ/issues"

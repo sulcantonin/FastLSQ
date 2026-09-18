@@ -26,6 +26,12 @@
   ],
   "related_identifiers": [
     {
+      "identifier": "https://fastlsq.com",
+      "relation": "isDocumentedBy",
+      "resource_type": "publication-other",
+      "scheme": "url"
+    },
+    {
       "identifier": "arXiv:2602.10541",
       "relation": "isSupplementTo",
       "resource_type": "publication-preprint",
