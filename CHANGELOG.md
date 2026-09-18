@@ -43,35 +43,6 @@ this file jumps 0.1.0 → 0.2.0 → 0.1.5 and does not describe them. Reconstruc
 changelog entries a year after the fact would be invention rather than record, so the
 gap is documented here instead of filled in.
 
-## [Unreleased]
-
-Documentation only; no code change.
-
-### Fixed
-
-- **The citation in `README.md` had the wrong paper title.** It read *"FastLSQ: A
-  Framework for One-Shot PDE Solving"*; the actual title of arXiv:2602.10541 is
-  *"FastLSQ: Solving PDEs in One Shot via Fourier Features with Exact Analytical
-  Derivatives"*. Anyone who copied that BibTeX block produced a wrong bibliography
-  entry. The block now matches the arXiv record and carries the DOI.
-- `paper.bib` cited the same preprint without the `FastLSQ:` title prefix. Corrected to
-  the arXiv title, so the JOSS paper and the README agree.
-
-### Added
-
-- Release tags for every version, and the *Release tags* section above documenting how
-  they were reconstructed, which three are approximate, and which documented versions
-  were never released.
-- `README.md`: status badges (CI, PyPI, Python versions, licence, arXiv); the
-  dependency and optional-extras list; a **Development** section covering the test
-  suite and CI; a **Releases and versioning** section; and a pointer to the JOSS paper
-  draft.
-
-### Changed
-
-- `README.md`: the BerkeleyLab ATAP talk link moved from above the project title, where
-  it preceded the description, into the **Paper** section with the other references.
-
 ## [0.6.1] - 2026-09-18
 
 A correctness and packaging pass. No published number changes, and no API is
@@ -154,6 +125,31 @@ removed -- but three of the fixes below were silent wrong answers, not errors.
 - The JOSS submission draft (`paper.md`, `paper.bib`) is tracked in the repository.
 - Two 0.5.x changelog entries advertised example scripts under `examples/inverse/` that
   were never shipped; both entries now say so.
+
+### Fixed -- documentation
+
+- **The citation in `README.md` had the wrong paper title.** It read *"FastLSQ: A
+  Framework for One-Shot PDE Solving"*; the actual title of arXiv:2602.10541 is
+  *"FastLSQ: Solving PDEs in One Shot via Fourier Features with Exact Analytical
+  Derivatives"*. Anyone who copied that BibTeX block produced a wrong bibliography
+  entry. The block now matches the arXiv record and carries the DOI.
+- `paper.bib` cited the same preprint without the `FastLSQ:` title prefix. Corrected to
+  the arXiv title, so the JOSS paper and the README agree.
+
+### Added -- release tags and README
+
+- Release tags for every version, and the *Release tags* section above documenting how
+  they were reconstructed, which three are approximate, and which documented versions
+  were never released.
+- `README.md`: status badges (CI, PyPI, Python versions, licence, arXiv); the
+  dependency and optional-extras list; a **Development** section covering the test
+  suite and CI; a **Releases and versioning** section; and a pointer to the JOSS paper
+  draft.
+
+### Changed -- README
+
+- `README.md`: the BerkeleyLab ATAP talk link moved from above the project title, where
+  it preceded the description, into the **Paper** section with the other references.
 
 ## [0.6.0] - 2026-07-21
 
