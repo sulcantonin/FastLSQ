@@ -35,3 +35,6 @@ coverage.xml
 
 # Misc
 *.log
+
+# Figure output written by examples/inverse_heat_source.py
+paper/
