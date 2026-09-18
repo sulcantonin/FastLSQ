@@ -42,3 +42,6 @@ paper/
 # The website lives in its own repository, not here.
 # Recover the old copy with: git checkout 8392f6e -- site/
 site/
+
+# setuptools sdist scratch dir (fastlsq-<version>/), left behind by python -m build
+/fastlsq-[0-9]*/
