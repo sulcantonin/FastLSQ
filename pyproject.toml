@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "FastLSQ"
-version = "0.6.0"
+version = "0.6.1"
 description = "One-shot PDE solving via Fourier features with exact analytical derivatives; rank-revealing solvers, learnable anisotropic bandwidth, and CPU/CUDA/MPS support"
 readme = "README.md"
 license = "MIT"
@@ -47,6 +47,9 @@ battery = [
 dev = [
     "pytest>=7.0",
     "pandas>=2.0",
+    # tests/test_grad_shafranov.py and tests/test_grid_swing.py import the example
+    # scripts under examples/, which use scipy for their reference solvers.
+    "scipy>=1.10",
     "build",
     "twine",
 ]
