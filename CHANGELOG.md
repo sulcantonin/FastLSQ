@@ -25,6 +25,23 @@ Three tags are **approximate**, and their tag messages say so:
 All three were released from a working tree holding source that was never committed.
 For those versions the sdist on PyPI is the record, not the tag.
 
+### Zenodo archives
+
+Every tag is archived on Zenodo under concept DOI
+[10.5281/zenodo.22830737](https://doi.org/10.5281/zenodo.22830737).
+
+Two things about that archive are worth knowing, because neither is obvious:
+
+- **Zenodo reads `.zenodo.json` from the tagged commit's tree, not from `main`.**
+  No tag before 0.6.2 contained the file, so every archived version up to and
+  including 0.6.1 carries GitHub's auto-generated metadata -- the title
+  `sulcantonin/FastLSQ: FastLSQ <version>`, no ORCID, no affiliation, no keywords
+  and no link to the preprint.
+- **Zenodo's "latest version" is the one published last, not the highest version
+  number.** The twenty releases were archived in parallel and finished out of
+  order, so the concept DOI resolved to 0.2.6 for a while. Cutting a new release is
+  what corrects it.
+
 ### Versions documented here that were never released
 
 - **0.2.0** (dated 2026-03-01 below) was never on PyPI and `pyproject.toml` never
@@ -42,6 +59,65 @@ They are tagged, and their scope can be read from the tags and the commit histor
 this file jumps 0.1.0 → 0.2.0 → 0.1.5 and does not describe them. Reconstructing four
 changelog entries a year after the fact would be invention rather than record, so the
 gap is documented here instead of filled in.
+
+## [0.6.2] - 2026-09-18
+
+Packaging, citation and repository metadata. **No change to `fastlsq/`** -- the
+importable library is byte-identical to 0.6.1, and the wheel is unchanged. The
+sdist gains one example and its test.
+
+### Added
+
+- **`examples/stealth_navigation.py`** -- a FastLSQ world model refit inside a
+  control loop. A drone crosses a radar interference field sensing only a
+  five-point cross at its own position; every three steps it refits a surrogate
+  over everything sensed so far (one Tikhonov least-squares solve, 6.1 ms median)
+  and steers on that surrogate's *analytic* gradient. The ablation is the
+  argument: with the gradient term off, driving straight at the goal trips the
+  detector at step 133 of an otherwise 275-step crossing.
+
+  `tests/test_stealth_navigation.py` checks the analytic gradient against finite
+  differences and asserts the ablation in both directions.
+
+  The project website quoted figures for this demo, but no script in the
+  repository produced them. Now the numbers are output rather than assertion.
+
+- **Citation and archive metadata.** `CITATION.cff` drives GitHub's *Cite this
+  repository* widget, with `preferred-citation` pointing at the paper.
+  `.zenodo.json` describes the Zenodo deposit -- title, abstract, ORCID,
+  affiliation, keywords, and related identifiers for the preprint, the repository
+  and PyPI.
+
+  Zenodo reads `.zenodo.json` from the **tagged commit's tree**, and no earlier tag
+  contained it, so every archived version up to 0.6.1 carries GitHub's
+  auto-generated metadata instead. This is the first tag that fixes that.
+
+- **`scripts/add_zenodo_doi.py`** writes a Zenodo concept DOI into `README.md`,
+  `CITATION.cff` and `.zenodo.json` consistently; idempotent, with a `--check` mode.
+- **`scripts/sync_release_notes.py`** flattens Markdown tables in GitHub Release
+  bodies. Zenodo turns a release body into the archived record's description and
+  its converter does not understand tables, so a table arrives as one unreadable
+  run of pipes -- the first thing anyone following the DOI sees. `CHANGELOG.md`
+  keeps its tables, which GitHub renders correctly.
+- **`docs/RELEASING.md`** -- the release procedure, the Zenodo behaviour worth
+  knowing in advance, and when JOSS actually requires a DOI (at acceptance, not at
+  submission).
+
+### Changed
+
+- The Zenodo concept DOI [10.5281/zenodo.22830737](https://doi.org/10.5281/zenodo.22830737)
+  is recorded in the README badge and citation section, and in `CITATION.cff`.
+- `pyproject.toml` `Homepage` is now <https://fastlsq.com>; `Repository` still
+  points at GitHub, so PyPI shows both. The 0.6.1 upload predated this and shows
+  the repository as its homepage.
+- The 0.6.0 feature table's third column is headed "Benefit".
+
+### Removed
+
+- **The website.** `site/` and its GitHub Pages workflow are gone: this repository
+  is the Python package, and the site is maintained separately at
+  <https://fastlsq.com>. The old copy remains recoverable from history
+  (`git checkout 8392f6e -- site/`).
 
 ## [0.6.1] - 2026-09-18
 
