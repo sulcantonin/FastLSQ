@@ -1,7 +1,10 @@
 # FastLSQ
 
-[BerkeleyLab ATAP Talk](https://github.com/sulcantonin/FastLSQ/raw/main/presentations/ATAP_Sulc_20260324.pptx)
-
+[![tests](https://github.com/sulcantonin/FastLSQ/actions/workflows/tests.yml/badge.svg)](https://github.com/sulcantonin/FastLSQ/actions/workflows/tests.yml)
+[![PyPI](https://img.shields.io/pypi/v/FastLSQ.svg)](https://pypi.org/project/FastLSQ/)
+[![Python](https://img.shields.io/pypi/pyversions/FastLSQ.svg)](https://pypi.org/project/FastLSQ/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![arXiv](https://img.shields.io/badge/arXiv-2602.10541-b31b1b.svg)](https://arxiv.org/abs/2602.10541)
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/sulcantonin/FastLSQ/main/misc/fastlsq_teaser.png" alt="FastLSQ method overview" width="400"/>
@@ -27,13 +30,22 @@ regularisation, 1/sqrt(N) feature normalisation, and continuation/homotopy.
 pip install fastlsq
 ```
 
-For development (includes testing and build tools):
+Requires Python 3.9+, PyTorch 2.0+, NumPy 1.24+ and Matplotlib 3.7+.  There is no
+compiled extension and no mesh library: everything runs on the PyTorch tensor stack,
+on CPU, CUDA or Apple-MPS.
+
+For development -- test runner, the SciPy reference solvers the example scripts
+compare against, and the build tools:
 
 ```bash
 git clone https://github.com/sulcantonin/FastLSQ.git
 cd FastLSQ
 pip install -e ".[dev]"
+pytest tests/          # 251 tests, about 30 s on a laptop CPU
 ```
+
+Optional extras: `.[battery]` for the battery-degradation examples (`progpy`),
+`.[lightning]` for the PyTorch Lightning training loop.
 
 ## Quick start
 
@@ -475,23 +487,57 @@ See `examples/add_your_own_pde.py` for the complete tutorial.
 - **PyTorch Lightning**: Integration for training loops
 - **20+ benchmark problems**: Linear, nonlinear, and regression-mode PDEs
 
+## Development
+
+```bash
+pip install -e ".[dev]"
+pytest tests/
+```
+
+The suite is 251 tests and runs in about 30 seconds on a laptop CPU.  Every closed
+form -- derivative, integral, Fourier symbol, projection -- is checked against an
+independent reference (autograd, Gauss-Legendre quadrature, or the analytic value) in
+`tests/test_closed_forms_property.py`, so a wrong closed form fails the suite rather
+than silently returning a plausible number.
+
+[Continuous integration](https://github.com/sulcantonin/FastLSQ/actions/workflows/tests.yml)
+runs the suite on Python 3.9, 3.10, 3.11 and 3.12, and separately builds the sdist and
+wheel and checks their metadata.
+
+## Releases and versioning
+
+Released versions are on [PyPI](https://pypi.org/project/FastLSQ/) and tagged in this
+repository as `vMAJOR.MINOR.PATCH`.  `CHANGELOG.md` documents every release.
+
+The tags for 0.1.0 through 0.6.0 were reconstructed after the fact, since the project
+was published to PyPI for its first year without tagging.  Each tag was matched to its
+commit by comparing the commit's `fastlsq/*.py` sources against the sdist actually
+published, so most are byte-for-byte exact; the three that are not say so in the tag
+message.  See the *Release tags* note at the top of `CHANGELOG.md`.
+
 ## Paper
 
-The full preprint is available on [arXiv](https://arxiv.org/abs/2602.10541)
+The preprint is on [arXiv](https://arxiv.org/abs/2602.10541).  A software paper for the
+[Journal of Open Source Software](https://joss.theoj.org/) is drafted in
+[`paper.md`](paper.md).
+
+There is also a [BerkeleyLab ATAP talk](https://github.com/sulcantonin/FastLSQ/raw/main/presentations/ATAP_Sulc_20260324.pptx)
+covering the method and the accelerator-physics applications.
 
 ## Citing this work
 
 If you use FastLSQ in your research, please cite:
 
 ```bibtex
-@misc{sulc2026fastlsqframeworkoneshotpde,
-      title={FastLSQ: A Framework for One-Shot PDE Solving}, 
-      author={Antonin Sulc},
-      year={2026},
-      eprint={2602.10541},
-      archivePrefix={arXiv},
-      primaryClass={math.NA},
-      url={https://arxiv.org/abs/2602.10541}, 
+@misc{sulc2026fastlsq,
+  author        = {Sulc, Antonin},
+  title         = {{FastLSQ}: Solving {PDEs} in One Shot via {Fourier} Features with Exact Analytical Derivatives},
+  year          = {2026},
+  eprint        = {2602.10541},
+  archivePrefix = {arXiv},
+  primaryClass  = {math.NA},
+  doi           = {10.48550/arXiv.2602.10541},
+  url           = {https://arxiv.org/abs/2602.10541}
 }
 ```
 
