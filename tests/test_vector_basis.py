@@ -3,6 +3,9 @@
 
 """Tests for the 0.1.5 vector-valued basis."""
 
+import pathlib
+import re
+
 import numpy as np
 import pytest
 import torch
@@ -20,7 +23,18 @@ from fastlsq.utils import device
 # ----------------------------------------------------------------------
 
 def test_version():
-    assert fastlsq.__version__ == "0.6.0"
+    """`__version__` must agree with the version setuptools will package.
+
+    Asserting a hard-coded literal here only proved the literal had been edited
+    too, and it had to be edited on every release.  What can actually go wrong
+    is the two sources of truth drifting apart, so compare them directly.
+    """
+    pyproject = pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml"
+    declared = re.search(
+        r'^version\s*=\s*"([^"]+)"', pyproject.read_text(), flags=re.MULTILINE
+    )
+    assert declared is not None, f"no version in {pyproject}"
+    assert fastlsq.__version__ == declared.group(1)
 
 
 def test_imports():

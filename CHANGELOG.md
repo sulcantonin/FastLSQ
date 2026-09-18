@@ -2,6 +2,83 @@
 
 All notable changes to FastLSQ will be documented in this file.
 
+## [0.6.1] - 2026-09-18
+
+A correctness and packaging pass. No published number changes, and no API is
+removed -- but three of the fixes below were silent wrong answers, not errors.
+
+### Fixed -- silent wrong answers
+
+- **kernels** -- `SeparableKernelOperator.inner_products` keyed its cache on
+  `(id(basis), n_features)`. A freed basis' address is reused by the next one, and
+  `LearnableFastLSQ.basis` builds a new basis object on every access, so a learnable fit
+  of a Fredholm problem could train on another basis' operators (measured error of the
+  assembled block 0.083 on entries of about 0.05, with no warning). The key is now the
+  storage pointer and version counter of `W` and `b`, plus a weak reference to the basis.
+- **linalg** -- `method="qr"` on a rank-deficient matrix returned garbage with no
+  exception and no warning (`||x|| = 7e18`, residual `6e4`, where `svd` gives `59` and
+  `1e-8`). The diagonal of `R` is now tested against `rcond` and warned about.
+- **learnable** -- `driver="gelsd"` was hard-coded, and torch accepts the rank-revealing
+  LAPACK drivers on CPU only, so the learnable path could not run off CPU. Now CPU-only.
+
+### Fixed -- missing operators
+
+- **augment** -- `AugmentedBasis` gained `hessian_diag`, `biharmonic`, `advection` and
+  `multi_integral`, with the closed forms for the polynomial columns.
+  `MultiIntegralOperator.apply(aug, x)` used to raise `AttributeError`, so the `Wave1D`,
+  `Wave2D_MS` and `Maxwell2D_TM` problems could not take an augmented basis at all.
+- **basis** -- a 0-d (scalar) symbol is a constant multiplier, not an error.
+- **solvers** -- `add_block(scale=...)` accepts a tuple or tensor of per-axis scales, not
+  just a list or ndarray.
+- **newton** -- when no backtracked step satisfied Armijo, the loop restored `beta` and
+  then recomputed the identical step until `max_iter`, while `history` recorded the last
+  alpha tried as if the step had been taken. It now stops, records the rejection as
+  `step_size 0.0`, and tags every exit with a stop reason.
+- **kernels** -- `from_inner_products` objects now raise a clear error from
+  `check_quadrature` and `degenerate_eigenvalues` instead of failing inside `leggauss(0)`.
+
+### Changed -- diagnostics and documentation
+
+- **linalg** -- `return_info` now carries `method_used`, because `"auto"` picks its
+  back-end at run time; on CPU with `mu = 0` it never runs QR (Cholesky probe, then
+  `gelsd`), which the module docstring claimed otherwise. The docstring now describes what
+  the code does.
+- **linalg/api** -- `rank_used` is documented as what it is: a post-hoc count of singular
+  values above `rcond * sigma_max`, not the rank the back-end worked with.
+- **newton** -- the convergence test is relative to the first residual, as the code always
+  did; the docstring said absolute.
+- **kernels** -- `degenerate_eigenvalues` no longer runs a full quadrature for inner
+  products it discards, and its docstring no longer claims the values depend on the basis.
+- **basis** -- the `1/sqrt(N)` normalisation convention is documented, including the
+  differing defaults of `solve_linear` and `solve_nonlinear`.
+
+### Tests
+
+- `test_symbol` used `np.trapz`, removed in NumPy 2, so the fractional-Laplacian check
+  against the singular-integral definition silently never ran on a current install. With
+  `np.trapezoid` the suite goes from 202 passed / 3 failed to 205 passed.
+- New `tests/test_closed_forms_property.py`: 46 property tests checking every closed form
+  against an independent reference (autograd, Gauss-Legendre quadrature, the analytic
+  characteristic value) at random dimensions, feature counts, bandwidths and orders,
+  including the cache-invalidation regression above.
+- `test_version` compared `fastlsq.__version__` against a hard-coded literal, so it had
+  to be edited on every release and never caught anything. It now compares
+  `__version__` against the version in `pyproject.toml`, which is the drift that can
+  actually happen.
+- Full suite: 251 passed.
+
+### Packaging and repository
+
+- `fastlsq/py.typed` is now actually shipped. `[tool.setuptools.package-data]` had
+  declared it since 0.4.0, but the file did not exist, so the package advertised PEP 561
+  inline typing that type checkers never saw.
+- The build requirement is `setuptools>=77.0`. `license = "MIT"` is the PEP 639 SPDX
+  expression form, which setuptools only understands from 77.0 on; the pin said `>=68.0`.
+- Continuous integration runs the suite on Python 3.9 through 3.12 (`.github/workflows/tests.yml`).
+- The JOSS submission draft (`paper.md`, `paper.bib`) is tracked in the repository.
+- Two 0.5.x changelog entries advertised example scripts under `examples/inverse/` that
+  were never shipped; both entries now say so.
+
 ## [0.6.0] - 2026-07-21
 
 Completes the operator taxonomy: multi-axis integrals, separable kernels, and
@@ -361,8 +438,10 @@ augmentation columns (§2.3).
   Gauss--Hermite quadrature of the slice integral to machine precision in d = 2, 3, 4
   (≤4e-13 observed), that autodiff of the rows wrt `c` matches finite differences, and
   that a windowed field is recovered from its projections at several directions in one
-  LSQ. `examples/inverse/tomography_projection.py` demonstrates the full reconstruction
-  plus the differentiable-optics gradient.
+  LSQ. *(Correction, 0.6.1: this entry also announced an
+  `examples/inverse/tomography_projection.py` demonstrating the full reconstruction plus
+  the differentiable-optics gradient. That example was never shipped; the reconstruction
+  and the gradient check live in `tests/test_projection.py` instead.)*
 
 ### Scope (honest)
 
@@ -401,9 +480,11 @@ augmentation columns (§2.3).
   linear-least-squares design matrix; coefficients stay differentiable so learnable
   integral-term coefficients train through the solve. All three exported from `fastlsq`.
 - **Examples** `examples/integro_differential_demo.py` (one-shot forward solve of
-  `u'(x) + ∫_0^x u ds = f`, rel-L2 ~3e-11) and
-  `examples/inverse/inverse_memory_kernel.py` (recover an unknown memory strength λ from
-  noisy data via AdamW through the differentiable solve). New `tests/test_integral.py`
+  `u'(x) + ∫_0^x u ds = f`, rel-L2 ~3e-11). *(Correction, 0.6.1: this entry also
+  announced an `examples/inverse/inverse_memory_kernel.py` recovering an unknown memory
+  strength λ from noisy data via AdamW through the differentiable solve. That example was
+  never shipped; gradient flow through the solve is covered by `tests/test_integral.py`.)*
+  New `tests/test_integral.py`
   asserts ∫-then-∂ round-trips to identity, Volterra/definite match quadrature, the DC
   guard stays finite, and gradients flow to learnable coefficients.
 
