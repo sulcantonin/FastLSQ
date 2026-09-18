@@ -26,6 +26,21 @@
 
 5. Create the GitHub Release from the tag, with the `CHANGELOG.md` entry as its
    body. **Do this before uploading to PyPI** if Zenodo archiving is on — see below.
+
+   **Flatten any Markdown tables first.** Zenodo turns a release body into the
+   archived record's description, and its converter does not understand tables: a
+   table arrives as one unreadable run of pipes, and it is the first thing anyone
+   following the DOI sees. `CHANGELOG.md` keeps its tables — GitHub renders those
+   properly — so the conversion happens only for the release body:
+
+   ```bash
+   python scripts/sync_release_notes.py --check   # preview
+   python scripts/sync_release_notes.py           # rewrite every release
+   python scripts/sync_release_notes.py v0.7.0    # or just one
+   ```
+
+   It is idempotent, and every other kind of Markdown (headings, lists, code
+   fences, emphasis) survives Zenodo's conversion untouched.
 6. `twine upload dist/*`.
 
 ## Zenodo archiving
