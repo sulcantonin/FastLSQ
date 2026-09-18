@@ -11,11 +11,10 @@ Zenodo mints two DOIs for a GitHub-archived repository:
 
 Cite the concept DOI.  It is the one that keeps working when you publish 0.7.0.
 
-This script writes it into the four files that have to agree with each other:
+This script writes it into the three files that have to agree with each other:
 
     README.md        the badge and the citation section
     CITATION.cff     the identifiers block, for GitHub's "Cite this repository"
-    site/index.html  the footer and the cite section
     .zenodo.json     as a related identifier, so the deposit points at itself
 
 Run:
@@ -94,34 +93,6 @@ def patch_citation(doi, record, dry):
     return write(p, original, s, dry)
 
 
-def patch_site(doi, record, dry):
-    p = ROOT / "site" / "index.html"
-    s = original = p.read_text()
-
-    link = f'<a href="https://doi.org/{doi}">software DOI</a>'
-    if "doi.org/10.5281/zenodo" in s:
-        s = re.sub(r'<a href="https://doi\.org/10\.5281/zenodo\.[^"]*">[^<]*</a>',
-                   link, s)
-    else:
-        anchor = '<a href="https://arxiv.org/abs/2602.10541">paper (arXiv)</a>'
-        if anchor not in s:
-            fail("site/index.html: could not find the arXiv footer link to anchor to")
-        s = s.replace(anchor, anchor + "\n      " + link, 1)
-
-    # and in the BibTeX block, so a copied citation carries the DOI
-    if "zenodo" not in s.split("<code id=\"bib\">")[-1].split("</code>")[0]:
-        s = s.replace(
-            '  url           = {https://arxiv.org/abs/2602.10541}\n}',
-            '  url           = {https://arxiv.org/abs/2602.10541}\n}\n\n'
-            '@software{sulc2026fastlsq_software,\n'
-            '  author    = {Sulc, Antonin},\n'
-            '  title     = {{FastLSQ}},\n'
-            f'  doi       = {{{doi}}},\n'
-            f'  url       = {{https://doi.org/{doi}}},\n'
-            '  publisher = {Zenodo}\n}', 1)
-
-    return write(p, original, s, dry)
-
 
 def patch_zenodo_json(doi, record, dry):
     p = ROOT / ".zenodo.json"
@@ -168,13 +139,12 @@ def main():
 
     print(f"{'Checking' if args.check else 'Writing'} DOI {doi}")
     changed = [fn(doi, m.group(1), args.check) for fn in
-               (patch_readme, patch_citation, patch_site, patch_zenodo_json)]
+               (patch_readme, patch_citation, patch_zenodo_json)]
 
     if args.check:
         print(f"\n{sum(changed)} file(s) would change.")
     elif any(changed):
         print(f"\n{sum(changed)} file(s) updated. Review with `git diff`, then commit.")
-        print("Note: the site redeploys automatically once site/ lands on main.")
     else:
         print("\nNothing to do.")
 
