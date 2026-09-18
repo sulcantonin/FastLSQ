@@ -1,0 +1,48 @@
+{
+  "title": "FastLSQ: One-shot PDE solving via Fourier features with exact analytical derivatives",
+  "description": "<p>FastLSQ solves linear partial differential, integral and integro-differential equations in a <em>single</em> least-squares call, by expanding the unknown in a basis of random Fourier features whose derivatives and integrals are available in closed form.</p><p>Because every feature is a plane wave, a linear differential, integral, integro-differential or nonlocal operator maps the basis to another explicit matrix: there is no mesh, no automatic differentiation and no iterative network training. Nonlinear problems are handled by Newton-Raphson iteration over the same assembly. The random-feature system is typically rank-deficient, so the solve is routed through an automatically selected, backward-stable least-squares back-end (a Cholesky fast path, Householder QR, and a rank-revealing SVD fallback) running on CPU, CUDA or Apple-MPS via PyTorch.</p><p>The closed-form derivatives make the fitted field a differentiable digital twin: the operator assembles and factors once, every subsequent forward solve is a back-substitution, and gradients return through the same factor. That makes inverse problems, parameter identification, tomographic reconstruction and control loops cheap enough to run thousands of forward solves inside an optimiser.</p>",
+  "upload_type": "software",
+  "license": "MIT",
+  "access_right": "open",
+  "creators": [
+    {
+      "name": "Sulc, Antonin",
+      "orcid": "0000-0001-7767-778X",
+      "affiliation": "Lawrence Berkeley National Laboratory, Berkeley, CA, United States"
+    }
+  ],
+  "keywords": [
+    "partial differential equations",
+    "integral equations",
+    "inverse problems",
+    "Fourier features",
+    "random features",
+    "least squares",
+    "closed-form derivatives",
+    "differentiable surrogate",
+    "scientific machine learning",
+    "physics-informed machine learning",
+    "PyTorch"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "arXiv:2602.10541",
+      "relation": "isSupplementTo",
+      "resource_type": "publication-preprint",
+      "scheme": "arxiv"
+    },
+    {
+      "identifier": "https://github.com/sulcantonin/FastLSQ",
+      "relation": "isSupplementTo",
+      "resource_type": "software",
+      "scheme": "url"
+    },
+    {
+      "identifier": "https://pypi.org/project/FastLSQ/",
+      "relation": "isIdenticalTo",
+      "resource_type": "software",
+      "scheme": "url"
+    }
+  ],
+  "language": "eng"
+}
