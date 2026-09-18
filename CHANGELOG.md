@@ -69,6 +69,12 @@ removed -- but three of the fixes below were silent wrong answers, not errors.
 
 ### Packaging and repository
 
+- **`scipy` is declared as a test dependency.** Eight scripts under `examples/` use it for
+  their reference solvers, and `tests/test_grad_shafranov.py` and `tests/test_grid_swing.py`
+  import those scripts -- but `scipy` appeared only in the `battery` extra, never in `dev`
+  or `requirements.txt`. `pip install -e ".[dev]"` into a clean environment produced six
+  errors; the suite passed locally only where scipy happened to be installed for other
+  reasons. Found by the new CI on its first run.
 - `fastlsq/py.typed` is now actually shipped. `[tool.setuptools.package-data]` had
   declared it since 0.4.0, but the file did not exist, so the package advertised PEP 561
   inline typing that type checkers never saw.

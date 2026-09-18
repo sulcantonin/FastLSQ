@@ -47,6 +47,9 @@ battery = [
 dev = [
     "pytest>=7.0",
     "pandas>=2.0",
+    # tests/test_grad_shafranov.py and tests/test_grid_swing.py import the example
+    # scripts under examples/, which use scipy for their reference solvers.
+    "scipy>=1.10",
     "build",
     "twine",
 ]
