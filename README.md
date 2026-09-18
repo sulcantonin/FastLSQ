@@ -5,6 +5,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/FastLSQ.svg)](https://pypi.org/project/FastLSQ/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![arXiv](https://img.shields.io/badge/arXiv-2602.10541-b31b1b.svg)](https://arxiv.org/abs/2602.10541)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22830737.svg)](https://doi.org/10.5281/zenodo.22830737)
 [![site](https://img.shields.io/badge/site-fastlsq.com-1f3df5.svg)](https://fastlsq.com)
 
 <p align="center">
@@ -541,6 +542,8 @@ If you use FastLSQ in your research, please cite:
   url           = {https://arxiv.org/abs/2602.10541}
 }
 ```
+
+To cite a specific archived version of the code rather than the paper, use the Zenodo concept DOI [10.5281/zenodo.22830737](https://doi.org/10.5281/zenodo.22830737), which always resolves to the most recent release.
 
 ## License
 

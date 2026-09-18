@@ -35,17 +35,10 @@ license: MIT
 version: 0.6.1
 date-released: "2026-09-18"
 
-# Once the Zenodo DOI is minted, add it here so GitHub's "Cite this repository"
-# widget offers it.  Use the CONCEPT DOI (the one that always resolves to the
-# newest version), not a single version's DOI.  scripts/add_zenodo_doi.py does
-# this for you, along with the README and .zenodo.json:
-#
-#     python scripts/add_zenodo_doi.py 10.5281/zenodo.XXXXXXX
-#
-# identifiers:
-#   - type: doi
-#     value: 10.5281/zenodo.XXXXXXX
-#     description: Concept DOI — resolves to the latest archived version
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.22830737
+    description: Concept DOI — resolves to the latest archived version
 
 preferred-citation:
   type: article

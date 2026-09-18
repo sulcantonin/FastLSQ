@@ -48,6 +48,12 @@
       "relation": "isIdenticalTo",
       "resource_type": "software",
       "scheme": "url"
+    },
+    {
+      "identifier": "https://doi.org/10.5281/zenodo.22830737",
+      "relation": "isVersionOf",
+      "resource_type": "software",
+      "scheme": "doi"
     }
   ],
   "language": "eng"
