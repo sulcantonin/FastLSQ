@@ -159,7 +159,7 @@ Fredholm equations, with the integral-equation problems promoted into the same
 
 ### New features
 
-| Feature | API | What it buys |
+| Feature | API | Benefit |
 |---|---|---|
 | Multi-axis integrals | `MultiIntegralOperator`, `SinusoidalBasis.multi_integral` | Integrate over any subset of axes at once, each independently definite or Volterra — area/volume functionals and mixed "definite in space, running in time" memory terms that a single-axis operator cannot express |
 | Separable (degenerate) kernels | `SeparableKernelOperator` | `K(x,y) = Σ g_m(x) h_m(y)` assembles as a rank-`R` product `G @ C`; the inner products `C` are computed once, independent of the collocation points |

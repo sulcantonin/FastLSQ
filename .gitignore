@@ -38,3 +38,7 @@ coverage.xml
 
 # Figure output written by examples/inverse_heat_source.py
 paper/
+
+# The website lives in its own repository, not here.
+# Recover the old copy with: git checkout 8392f6e -- site/
+site/
