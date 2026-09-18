@@ -1,0 +1,60 @@
+cff-version: 1.2.0
+title: "FastLSQ: One-shot PDE solving via Fourier features with exact analytical derivatives"
+message: >-
+  If you use this software, please cite the paper below. If you need to cite a
+  specific archived version of the code, use the Zenodo DOI for that version.
+type: software
+authors:
+  - family-names: Sulc
+    given-names: Antonin
+    orcid: "https://orcid.org/0000-0001-7767-778X"
+    affiliation: "Lawrence Berkeley National Laboratory, Berkeley, CA, United States"
+repository-code: "https://github.com/sulcantonin/FastLSQ"
+url: "https://sulcantonin.github.io/FastLSQ/"
+repository-artifact: "https://pypi.org/project/FastLSQ/"
+abstract: >-
+  FastLSQ solves linear partial differential, integral and integro-differential
+  equations in a single least-squares call, by expanding the unknown in a basis of
+  random Fourier features whose derivatives and integrals are available in closed
+  form. Because every feature is a plane wave, a linear operator maps the basis to
+  another explicit matrix: no mesh, no automatic differentiation, no iterative
+  training. The closed-form derivatives make the fitted field a differentiable
+  surrogate whose operator factors once, so inverse problems and control loops can
+  afford thousands of forward solves.
+keywords:
+  - partial differential equations
+  - integral equations
+  - inverse problems
+  - Fourier features
+  - least squares
+  - closed-form derivatives
+  - differentiable surrogate
+  - scientific machine learning
+  - PyTorch
+license: MIT
+version: 0.6.1
+date-released: "2026-09-18"
+
+# Once the Zenodo DOI is minted, add it here so GitHub's "Cite this repository"
+# widget offers it.  Use the CONCEPT DOI (the one that always resolves to the
+# newest version), not a single version's DOI.  scripts/add_zenodo_doi.py does
+# this for you, along with the README, the site and .zenodo.json:
+#
+#     python scripts/add_zenodo_doi.py 10.5281/zenodo.XXXXXXX
+#
+# identifiers:
+#   - type: doi
+#     value: 10.5281/zenodo.XXXXXXX
+#     description: Concept DOI — resolves to the latest archived version
+
+preferred-citation:
+  type: article
+  title: "FastLSQ: Solving PDEs in One Shot via Fourier Features with Exact Analytical Derivatives"
+  authors:
+    - family-names: Sulc
+      given-names: Antonin
+      orcid: "https://orcid.org/0000-0001-7767-778X"
+  year: 2026
+  doi: "10.48550/arXiv.2602.10541"
+  url: "https://arxiv.org/abs/2602.10541"
+  journal: "arXiv preprint arXiv:2602.10541"
