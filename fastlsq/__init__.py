@@ -31,8 +31,19 @@ from fastlsq.kernels import (
     degenerate_eigenvalues,
 )
 from fastlsq.solvers import FastLSQSolver, PIELMSolver
-from fastlsq.vector  import VectorBasis, VectorFastLSQSolver
-from fastlsq.linalg import solve_lstsq
+from fastlsq.vector  import VectorBasis, VectorFastLSQSolver, DivergenceFreeBasis
+from fastlsq.mirror import MirrorBasis
+from fastlsq.singular import StokesSingularities, seat_sources
+from fastlsq.navier_stokes import (
+    IncompressibleFlow,
+    solve_navier_stokes,
+    NavierStokesResult,
+    Dirichlet,
+    Slip,
+    Traction,
+    PressurePoint,
+)
+from fastlsq.linalg import solve_lstsq, NormalEquations
 from fastlsq.block import block_concat, pack_beta, unpack_beta
 from fastlsq.api import solve_linear, solve_nonlinear
 from fastlsq.tuning import auto_select_scale
@@ -62,6 +73,7 @@ from fastlsq.geometry import (
     sdf_box,
     sdf_annulus,
     sdf_lshape,
+    sdf_grid,
     sdf_flower,
     sdf_polygon,
     sdf_tokamak,
@@ -110,10 +122,23 @@ __all__ = [
     # Vector-valued basis  (0.1.5)
     "VectorBasis",
     "VectorFastLSQSolver",
+    "DivergenceFreeBasis",
+    "MirrorBasis",
+    # Incompressible flow
+    "IncompressibleFlow",
+    "solve_navier_stokes",
+    "NavierStokesResult",
+    "Dirichlet",
+    "Slip",
+    "Traction",
+    "PressurePoint",
+    "StokesSingularities",
+    "seat_sources",
     # Core solvers
     "FastLSQSolver",
     "PIELMSolver",
     "solve_lstsq",
+    "NormalEquations",
     # Block assembly for vector-valued u
     "block_concat",
     "pack_beta",
@@ -150,6 +175,7 @@ __all__ = [
     "sdf_box",
     "sdf_annulus",
     "sdf_lshape",
+    "sdf_grid",
     "sdf_flower",
     "sdf_polygon",
     "sdf_tokamak",

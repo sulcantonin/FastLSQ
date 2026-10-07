@@ -775,6 +775,43 @@ def sdf_complement(a: SDFT) -> SDFT:
     return lambda x: -a(x).reshape(-1)
 
 
+def sdf_grid(values, lo: Sequence[float], h: Union[float, Sequence[float]]) -> SDFT:
+    """Signed distance sampled on a regular grid, interpolated (bi/tri)linearly.
+
+    The way to bring a mesh in: compute its signed distance on a grid once (any
+    mesh library does this), then hand the grid over.  ``values[i, j(, k)]`` is the
+    distance at ``lo + h * (i, j(, k))``, negative inside.  Outside the grid box
+    the distance to the box is added, so far-away points are never mistaken for
+    near ones.  The result is differentiable, so :func:`outward_normal` and
+    :func:`project_to_boundary` work on it unchanged.
+
+    Parameters
+    ----------
+    values : (nx, ny) or (nx, ny, nz) array or tensor
+    lo : grid origin, one entry per axis
+    h : grid spacing, scalar or per axis
+    """
+    v = torch.as_tensor(values, dtype=torch.get_default_dtype())
+    d = v.ndim
+    if d not in (2, 3):
+        raise ValueError(f"sdf_grid needs a 2-D or 3-D grid, got shape {tuple(v.shape)}")
+    lo_t = torch.as_tensor(lo, dtype=v.dtype).reshape(d)
+    h_t = torch.as_tensor(h, dtype=v.dtype).expand(d).clone()
+    n_t = torch.tensor(v.shape, dtype=v.dtype)
+    hi_t = lo_t + h_t * (n_t - 1)
+    G = v.permute(*reversed(range(d)))[None, None].contiguous()     # grid_sample wants (.., z, y, x)
+
+    def psi(x: torch.Tensor) -> torch.Tensor:
+        g, l, hh, ext = (t.to(device=x.device, dtype=x.dtype) for t in (G, lo_t, hi_t, h_t * (n_t - 1)))
+        u = (x - l) / ext * 2 - 1
+        val = torch.nn.functional.grid_sample(
+            g, u.reshape((1, -1) + (1,) * (d - 1) + (d,)), mode="bilinear",
+            padding_mode="border", align_corners=True).reshape(-1)
+        return val + torch.maximum(l - x, x - hh).clamp_min(0).norm(dim=1)
+
+    return psi
+
+
 # ======================================================================
 # SDFDomain: a domain you can sample, project onto, and take normals from
 # ======================================================================

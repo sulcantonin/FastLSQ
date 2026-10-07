@@ -60,6 +60,48 @@ this file jumps 0.1.0 → 0.2.0 → 0.1.5 and does not describe them. Reconstruc
 changelog entries a year after the fact would be invention rather than record, so the
 gap is documented here instead of filled in.
 
+## [Unreleased]
+
+Steady incompressible Navier-Stokes, upstreamed from the solver behind the
+fastlsq.com wind tunnel. New modules `fastlsq.mirror`, `fastlsq.singular` and
+`fastlsq.navier_stokes`; nothing existing changes behaviour.
+
+### Added
+
+- **`DivergenceFreeBasis`** (`fastlsq.vector`): plane waves polarised orthogonally
+  to their frequency, so `∇·u = 0` holds exactly for every coefficient vector. One
+  polarisation per frequency in 2-D, two in 3-D; multi-scale `random(sigma=[...])`;
+  optional `mirror_axis` pairing; `plain()` export to `W, b, C`.
+- **`MirrorBasis`** (`fastlsq.mirror`): `φ(x) ± φ(Rx)` for a reflection `R`, as a
+  drop-in basis (`evaluate`, `derivative`, `gradient`, `laplacian`, `operator`), so
+  any `Op` applies to it. Symmetric problems collocate half the domain.
+- **`StokesSingularities`, `seat_sources`** (`fastlsq.singular`): Stokeslets,
+  source doublets and pressure poles (optionally Oseenlets) with closed-form
+  gradients, as least-squares columns for flow past a body. Each force or doublet
+  column is an exact Stokes solution, so its viscous and pressure terms cancel
+  analytically in the momentum rows. `seat_sources` pushes surface points into a
+  body, capped at a fraction of the local thickness.
+- **`IncompressibleFlow`, `solve_navier_stokes`** (`fastlsq.navier_stokes`):
+  velocity `u_inf + u'`, pressure and singular columns as one linear model, with
+  Newton-linearised momentum rows, `Dirichlet`, `Slip`, `Traction` and
+  `PressurePoint` conditions, a pointwise residual diagnostic, surface traction,
+  and `plain()` export. The driver builds the boundary part of the normal
+  equations once and reuses it at every Newton step, and stops on the relative
+  change of the velocity field rather than of the coefficients.
+- **`NormalEquations`** (`fastlsq.linalg`): least squares accumulated block by
+  block (`add`, with scalar or per-row weights), solved by column-equilibrated
+  Cholesky with an escalating ridge. Memory is O(n²) in unknowns, independent of
+  the number of rows. `copy()` reuses a fixed part across solves.
+- **`sdf_grid`** (`fastlsq.geometry`): a signed distance sampled on a 2-D or 3-D
+  grid, interpolated multilinearly and extended outside the grid box. The way to
+  bring a mesh into the SDF geometry pipeline.
+- `examples/navier_stokes_kovasznay.py`, `examples/stokes_sphere_mfs.py` and
+  `tests/test_navier_stokes.py` (27 tests): exact divergence, closed forms against
+  finite differences, every singular column against the Stokes equations, Newton
+  rows against the nonlinear residual (second-order agreement), boundary rows
+  written out by hand, export round trips, and both example problems against
+  their exact solutions.
+
 ## [0.6.2] - 2026-09-18
 
 Packaging, citation and repository metadata. **No change to `fastlsq/`** -- the
