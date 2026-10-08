@@ -32,8 +32,8 @@ keywords:
   - scientific machine learning
   - PyTorch
 license: MIT
-version: 0.6.2
-date-released: "2026-09-18"
+version: 0.7.0
+date-released: "2026-10-08"
 
 identifiers:
   - type: doi

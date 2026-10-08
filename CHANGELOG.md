@@ -60,7 +60,7 @@ this file jumps 0.1.0 → 0.2.0 → 0.1.5 and does not describe them. Reconstruc
 changelog entries a year after the fact would be invention rather than record, so the
 gap is documented here instead of filled in.
 
-## [Unreleased]
+## [0.7.0] - 2026-10-08
 
 Steady incompressible Navier-Stokes, upstreamed from the solver behind the
 fastlsq.com wind tunnel. New modules `fastlsq.mirror`, `fastlsq.singular` and
