@@ -284,3 +284,86 @@ def solve_lstsq(A, b, mu=0.0, rcond=1e-12, method="auto",
     }
     x_out = x.to(mps_dev) if mps_dev is not None else x
     return x_out, info
+
+
+class NormalEquations:
+    """Least squares accumulated block by block through the normal equations.
+
+    ``add(A, b)`` folds a block of rows into ``G = Σ AᵀA`` and ``r = Σ Aᵀb``, so the
+    full design matrix never has to exist: memory is O(n²) in the number of unknowns,
+    not O(m·n) in rows × unknowns.  That is what makes a 3-D Navier–Stokes Newton step
+    with ~10⁵ collocation rows fit in a few GB.
+
+    ``solve`` equilibrates the columns (``S G S`` with ``S = diag(G)^{-1/2}``, the same
+    as scaling every column of ``A`` to unit norm before forming ``G``), adds a ridge
+    ``mu`` on that scale, and factors with Cholesky, raising ``mu`` tenfold until the
+    factorisation succeeds.
+
+    Forming ``AᵀA`` squares the condition number, so this is the right back-end only
+    when the equilibrated system is reasonably conditioned -- as the divergence-free
+    flow bases with singular columns are.  Check it against :func:`solve_lstsq` with
+    ``method="qr"`` on a smaller instance before relying on it: on the car of the
+    fastlsq.com wind tunnel the two agree to 1e-5 in drag, and on the Stokes sphere of
+    ``examples/stokes_sphere_mfs.py`` to every digit of the error.
+
+    Examples
+    --------
+    >>> ne = NormalEquations(n_unknowns)
+    >>> for xc in chunks:
+    ...     A, b = rows(xc)
+    ...     ne.add(A, b)
+    >>> beta = ne.solve()
+    """
+
+    def __init__(self, n: int, device=None, dtype=None):
+        dtype = dtype or torch.get_default_dtype()
+        self.G = torch.zeros(n, n, device=device, dtype=dtype)
+        self.r = torch.zeros(n, device=device, dtype=dtype)
+        self.n_rows = 0
+        self.mu_used = None
+
+    def add(self, A: torch.Tensor, b: torch.Tensor, weight=1.0) -> None:
+        """Fold rows ``A`` (m, n) with right-hand side ``b`` (m,) or (m, 1) in.
+
+        ``weight`` is a scalar or a per-row tensor of shape (m,); it multiplies both
+        ``A`` and ``b``, i.e. it weights the residual, not its square.
+        """
+        b = b.reshape(-1)
+        if torch.is_tensor(weight):
+            w = weight.reshape(-1).to(dtype=A.dtype, device=A.device)
+            A = A * w[:, None]
+            b = b * w
+        elif weight != 1.0:
+            A = A * weight
+            b = b * weight
+        A = A.to(dtype=self.G.dtype, device=self.G.device)
+        b = b.to(dtype=self.G.dtype, device=self.G.device)
+        self.G.addmm_(A.transpose(0, 1), A)
+        self.r.addmv_(A.transpose(0, 1), b)
+        self.n_rows += A.shape[0]
+
+    def solve(self, mu: float = 1e-12, max_tries: int = 8) -> torch.Tensor:
+        """Solve the accumulated system; returns the coefficient vector (n,)."""
+        d = torch.diagonal(self.G).clamp_min(torch.finfo(self.G.dtype).tiny)
+        s = 1.0 / torch.sqrt(d)
+        Gs = self.G * s[:, None] * s[None, :]
+        eye = torch.eye(Gs.shape[0], device=Gs.device, dtype=Gs.dtype)
+        for _ in range(max_tries):
+            L, info = torch.linalg.cholesky_ex(Gs + mu * eye)
+            if int(info) == 0:
+                break
+            mu *= 10.0
+        else:
+            raise torch.linalg.LinAlgError(
+                f"NormalEquations: Cholesky failed even with ridge mu={mu:.1e}")
+        self.mu_used = mu
+        y = torch.cholesky_solve((self.r * s)[:, None], L)[:, 0]
+        return y * s
+
+    def copy(self) -> "NormalEquations":
+        """An independent copy: build rows that never change (the boundary rows of a
+        Newton loop, say) once, then copy and add the rest at every step."""
+        out = NormalEquations.__new__(NormalEquations)
+        out.G, out.r = self.G.clone(), self.r.clone()
+        out.n_rows, out.mu_used = self.n_rows, None
+        return out

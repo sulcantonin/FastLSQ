@@ -327,6 +327,54 @@ backward compatibility (the trailing component axis is squeezed when k=1). The
 runnable `block_concat` + `unpack_beta` solve that recovers both components of a
 k=2 system -- are the reference for the block-stacked vector path.
 
+### Incompressible flow (Navier-Stokes)
+
+Steady incompressible Navier-Stokes, `(u·∇)u + ∇p − νΔu = 0`, `∇·u = 0`, with
+Newton's method: every step is one linear least-squares solve.
+
+- **Continuity holds exactly.** `DivergenceFreeBasis` polarises each plane wave
+  orthogonally to its frequency (`t ⟂ W`), so every column has zero divergence at
+  every point and incompressibility never enters the system.
+- **Flow past a body.** `StokesSingularities` adds closed-form Stokeslets, source
+  doublets and pressure poles seated just inside the body (the method of
+  fundamental solutions). A band-limited basis resolves the near-wall field slowly
+  because the flow's continuation into the body is singular; these columns carry
+  that structure. `seat_sources` places them from any signed-distance function,
+  and `sdf_grid` turns a gridded distance (from a mesh, say) into one.
+- **Symmetry for free.** `mirror_axis=` on the velocity and singular columns, and
+  `MirrorBasis` for the pressure, make the field exactly mirror-symmetric, so
+  only half the domain is collocated.
+- **Memory in unknowns, not rows.** Rows are accumulated chunk by chunk into
+  `NormalEquations` (column-equilibrated Cholesky with an automatic ridge), so the
+  3-D car behind fastlsq.com (8 000 unknowns, tens of thousands of collocation
+  points) solves in a few GB.
+
+```python
+import torch, fastlsq as fl
+
+vel = fl.DivergenceFreeBasis.random(2, 800, sigma=[1.0, 3.0, 6.0])
+pre = fl.SinusoidalBasis.random(2, 400, sigma=3.0)
+flow = fl.IncompressibleFlow(vel, pre, nu=1 / 40, u_inf=None)
+
+res = fl.solve_navier_stokes(
+    flow, x_interior,
+    [fl.Dirichlet(x_wall, u_wall, weight=10.0),        # also: Slip, Traction (outlets)
+     fl.PressurePoint(x0, 0.0)],                       # pins the pressure level
+    tol=1e-7)
+u, grad_u, p = flow.evaluate(x, res.theta)            # closed form, ∇·u = 0 exactly
+flow.residual(x, res.theta)["relative"]               # pointwise momentum residual
+```
+
+[examples/navier_stokes_kovasznay.py](examples/navier_stokes_kovasznay.py) solves
+Kovasznay flow at Re = 40: Newton converges quadratically in five solves to a
+velocity error of 1.2 × 10⁻⁷. [examples/stokes_sphere_mfs.py](examples/stokes_sphere_mfs.py)
+is Stokes flow past a sphere with sources on an inner sphere at 0.7 radii: velocity
+error 7 × 10⁻⁷ against the exact solution and drag within 2 × 10⁻⁷ of Stokes' law,
+where the same sinusoids without the singular columns stall at 37%.
+`flow.plain(theta)` exports plain `sin(W·x + b)` waves and source strengths, which a
+shader can evaluate without fastlsq; the wind tunnel on
+[fastlsq.com](https://fastlsq.com) is drawn that way.
+
 ### Plot solutions
 
 ```python
@@ -473,6 +521,7 @@ See `examples/add_your_own_pde.py` for the complete tutorial.
 - **Integral equations**: Separable (degenerate) kernels `K = Σ g_m(x) h_m(y)` assemble as a rank-`R` product with inner products precomputed once, so a Fredholm equation of the second kind `u − λ∫K u = f` is a single linear least squares needing **no boundary rows**. `degenerate_eigenvalues` reports the `λ` at which the equation is singular and `check_quadrature` whether the inner products are resolved -- both otherwise-silent failure modes. `MultiIntegralOperator` integrates over several axes at once, each independently definite or Volterra
 - **Nonlocal / Fourier-symbol operators**: `SymbolOperator` assembles any multiplier `m(ξ)` as a per-column rescale -- exact, quadrature-free, and the same cost as the Laplacian. Covers the **fractional Laplacian** `(−Δ)^s` (with a *learnable* order `s`), Riesz potentials and transforms, and **convolution** `k * u` from the kernel transform `k̂`. Operators whose kernels are singular and nonlocal -- dense, ill-conditioned matrices for FEM/FD -- are diagonal here
 - **Vector-valued solutions**: First-class support for **u**: ℝᵈ → ℝᵏ (elasticity, Stokes, Maxwell). Problems declare `n_outputs = k`; `block_concat` assembles coupled block systems; `solver.predict(x)` returns shape `(M, k)`. Scalar problems are the `k=1` case
+- **Incompressible flow**: `DivergenceFreeBasis` (∇·u = 0 by construction), `StokesSingularities` (Stokeslets and doublets inside a body), `MirrorBasis` symmetry and `NormalEquations` chunked solves, driven by `solve_navier_stokes` (Newton, one least-squares solve per step) with Dirichlet, free-slip, traction and pressure conditions
 - **Augmentation columns**: `AugmentedBasis` + `PolynomialColumns` widen the basis with exact `1, x, x², …` columns to pin integration constants and DC modes that leave the sinusoidal family -- transparent to every operator
 - **High-level API**: Solve PDEs in one line with `solve_linear()` and `solve_nonlinear()`
 - **Robust linear solver**: Pluggable least-squares back-ends; the default `auto` routes Cholesky -> QR -> SVD, and backward-stable QR delivers SVD-grade accuracy at QR cost on the rank-deficient random-feature system
@@ -496,7 +545,7 @@ pip install -e ".[dev]"
 pytest tests/
 ```
 
-The suite is 251 tests and runs in about 30 seconds on a laptop CPU.  Every closed
+The suite is 282 tests and runs in about 30 seconds on a laptop CPU.  Every closed
 form -- derivative, integral, Fourier symbol, projection -- is checked against an
 independent reference (autograd, Gauss-Legendre quadrature, or the analytic value) in
 `tests/test_closed_forms_property.py`, so a wrong closed form fails the suite rather

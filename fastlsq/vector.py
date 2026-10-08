@@ -61,6 +61,7 @@ import torch
 from fastlsq.basis import SinusoidalBasis
 from fastlsq.solvers import FastLSQSolver
 from fastlsq.utils import device
+from fastlsq.device import get_device
 
 
 # ======================================================================
@@ -410,3 +411,159 @@ class VectorFastLSQSolver:
                 "solver.beta is not set; assemble + solve first"
             )
         return self.basis.predict(x, self.beta)
+
+
+# ======================================================================
+# DivergenceFreeBasis -- incompressibility by construction
+# ======================================================================
+
+
+def _polarisations(W: torch.Tensor) -> torch.Tensor:
+    """Unit vectors orthogonal to each frequency column of ``W`` (d, N).
+
+    Returns (n_pol, d, N): one polarisation in 2-D (``W`` rotated by 90 degrees),
+    two in 3-D (an orthonormal pair spanning the plane normal to ``W``).
+    """
+    d, N = W.shape
+    n = W / W.norm(dim=0, keepdim=True).clamp_min(1e-12)
+    if d == 2:
+        return torch.stack([-n[1], n[0]])[None]
+    if d == 3:
+        nt = n.T
+        idx = nt.abs().argmin(dim=1)               # helper axis least aligned with W
+        e = torch.zeros_like(nt)
+        e[torch.arange(N, device=W.device), idx] = 1.0
+        t1 = torch.linalg.cross(nt, e)
+        t1 = t1 / t1.norm(dim=1, keepdim=True)
+        t2 = torch.linalg.cross(nt, t1)
+        return torch.stack([t1.T, t2.T])
+    raise ValueError(f"DivergenceFreeBasis supports input_dim 2 or 3, got {d}")
+
+
+class DivergenceFreeBasis:
+    """Vector fields that are exactly divergence-free, from plane waves.
+
+    A plane wave ``t sin(W . x + b)`` has divergence ``(t . W) cos(W . x + b)``,
+    which vanishes identically when the polarisation ``t`` is orthogonal to the
+    frequency ``W``.  Expanding a velocity in such waves,
+
+        u(x) = sum_j sum_p  c_{jp} t_{jp} phi_j(x),        t_{jp} . W_j = 0,
+
+    makes ``div u = 0`` hold exactly, at every point -- incompressibility never has
+    to enter the least-squares system, and a particle traced through ``u`` cannot
+    pile up or vanish.  There is one polarisation per frequency in 2-D (``W``
+    rotated by 90 degrees: the streamfunction basis) and two in 3-D.
+
+    The derivatives are those of the underlying :class:`SinusoidalBasis`, times the
+    constant polarisation, so every one stays closed form.
+
+    Parameters
+    ----------
+    basis : SinusoidalBasis
+        Frequencies, phases and normalisation.  ``input_dim`` must be 2 or 3.
+    mirror_axis : int, optional
+        Pair every wave with its reflection across ``x[mirror_axis] = 0``,
+        ``t phi(x) + R t phi(R x)``, so the field is exactly mirror-symmetric:
+        ``u(R x) = R u(x)`` -- the component normal to the plane is odd, the others
+        even.  Collocate only the half domain.
+
+    Unknowns are ordered polarisation-major: ``[c_{j,0} for all j | c_{j,1} ...]``.
+    Shapes: ``evaluate`` (M, d, P), ``gradient`` (M, d, d, P) with ``[:, k, m]`` the
+    derivative of component ``k`` along ``x_m``, ``laplacian`` (M, d, P), where
+    ``P = n_pol * N`` is :attr:`n_unknowns`.
+    """
+
+    def __init__(self, basis: SinusoidalBasis, mirror_axis: Optional[int] = None):
+        if basis.input_dim not in (2, 3):
+            raise ValueError("DivergenceFreeBasis needs input_dim 2 or 3")
+        self.basis = basis
+        self.mirror_axis = mirror_axis
+        self.t = _polarisations(basis.W)                       # (n_pol, d, N)
+        self._banks = [(basis, self.t)]
+        if mirror_axis is not None:
+            from fastlsq.mirror import reflection
+            R = reflection(basis.input_dim, mirror_axis, device=basis.W.device, dtype=basis.W.dtype)
+            mirror = SinusoidalBasis(R[:, None] * basis.W, basis.b)
+            mirror._inv_norm = basis._inv_norm
+            self._banks.append((mirror, R[None, :, None] * self.t))
+        self.R = None if mirror_axis is None else R
+
+    @classmethod
+    def random(
+        cls,
+        input_dim: int,
+        n_features: int,
+        sigma: Union[float, Sequence[float]] = 1.0,
+        mirror_axis: Optional[int] = None,
+        normalize: bool = True,
+        generator: Optional[torch.Generator] = None,
+    ) -> "DivergenceFreeBasis":
+        """Gaussian frequencies.  A sequence ``sigma`` splits the features into equal
+        blocks, one bandwidth each -- the usual multi-scale bank."""
+        sigmas = [sigma] if np.isscalar(sigma) else list(sigma)
+        sizes = [n_features // len(sigmas)] * len(sigmas)
+        sizes[-1] += n_features - sum(sizes)
+        dev = get_device()
+        Ws = [torch.randn(input_dim, n, generator=generator).to(dev) * s for n, s in zip(sizes, sigmas)]
+        W = torch.cat(Ws, dim=1)
+        b = (torch.rand(1, n_features, generator=generator) * 2 * np.pi).to(dev)
+        return cls(SinusoidalBasis(W, b, normalize=normalize), mirror_axis=mirror_axis)
+
+    @property
+    def input_dim(self) -> int:
+        return self.basis.input_dim
+
+    @property
+    def n_features(self) -> int:
+        return self.basis.n_features
+
+    @property
+    def n_polarisations(self) -> int:
+        return self.t.shape[0]
+
+    @property
+    def n_unknowns(self) -> int:
+        return self.n_polarisations * self.n_features
+
+    def blocks(self, x: torch.Tensor, laplacian: bool = True):
+        """``(val, grad, lap)``: (M, d, P), (M, d, d, P) and (M, d, P) or None."""
+        val = grad = lap = 0.0
+        for bank, t in self._banks:
+            c = bank.cache(x)
+            S = bank.evaluate(x, cache=c)                      # (M, N)
+            G = bank.gradient(x, cache=c)                      # (M, d, N)
+            val = val + torch.cat([S[:, None, :] * tp[None] for tp in t], dim=-1)
+            grad = grad + torch.cat([G[:, None, :, :] * tp[None, :, None, :] for tp in t], dim=-1)
+            if laplacian:
+                L = bank.laplacian(x, cache=c)
+                lap = lap + torch.cat([L[:, None, :] * tp[None] for tp in t], dim=-1)
+        return val, grad, (lap if laplacian else None)
+
+    def evaluate(self, x: torch.Tensor) -> torch.Tensor:
+        return self.blocks(x, laplacian=False)[0]
+
+    def gradient(self, x: torch.Tensor) -> torch.Tensor:
+        return self.blocks(x, laplacian=False)[1]
+
+    def laplacian(self, x: torch.Tensor) -> torch.Tensor:
+        return self.blocks(x)[2]
+
+    def predict(self, x: torch.Tensor, coef: torch.Tensor) -> torch.Tensor:
+        """The field u(x), shape (M, d)."""
+        return self.evaluate(x) @ coef.reshape(-1)
+
+    def plain(self, coef: torch.Tensor):
+        """Unroll to plain waves ``u(x) = sum_j C_j sin(W_j . x + b_j)``.
+
+        Returns ``W`` (n, d), ``b`` (n,) and ``C`` (n, d) with the normalisation and
+        any mirror partners folded in -- the form a shader or a NumPy one-liner
+        evaluates without fastlsq.
+        """
+        N = self.n_features
+        c = coef.reshape(self.n_polarisations, N)
+        Ws, bs, Cs = [], [], []
+        for bank, t in self._banks:
+            Ws.append(bank.W.T)
+            bs.append(bank.b.reshape(-1))
+            Cs.append((t * c[:, None, :]).sum(0).T * bank._inv_norm)
+        return torch.cat(Ws), torch.cat(bs), torch.cat(Cs)
