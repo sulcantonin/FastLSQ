@@ -68,10 +68,18 @@ class FastLSQSolver:
     def basis(self) -> SinusoidalBasis:
         """The underlying analytical derivative engine."""
         if self._basis is None:
+            if not self.W_list:
+                raise RuntimeError("FastLSQSolver has no feature blocks; call add_block() first")
             W = torch.cat(self.W_list, dim=1)
             b = torch.cat(self.b_list, dim=1)
             self._basis = SinusoidalBasis(W, b, normalize=self.normalize)
         return self._basis
+
+    def _require_beta(self):
+        if self.beta is None:
+            raise RuntimeError(
+                "solver.beta is not set: assemble and solve the system (or use "
+                "solve_linear / solve_nonlinear) before calling predict().")
 
     def predict(self, x):
         """Evaluate u_N(x).
@@ -79,6 +87,7 @@ class FastLSQSolver:
         Returns shape ``(M, k)`` where ``k`` is the number of output
         components stored in ``self.beta`` (``k=1`` for scalar problems).
         """
+        self._require_beta()
         return self.basis.evaluate(x) @ self.beta
 
     def predict_with_grad(self, x):
@@ -89,6 +98,7 @@ class FastLSQSolver:
         u : Tensor ``(M, k)``
         grad_u : Tensor ``(M, d)`` if ``k == 1`` else ``(M, d, k)``
         """
+        self._require_beta()
         cache = self.basis.cache(x)
         u = self.basis.evaluate(x, cache=cache) @ self.beta
         grad_u = torch.einsum(
@@ -104,6 +114,7 @@ class FastLSQSolver:
         Same shape conventions as ``predict_with_grad``; the Laplacian has
         shape ``(M, k)``.
         """
+        self._require_beta()
         cache = self.basis.cache(x)
         u = self.basis.evaluate(x, cache=cache) @ self.beta
         grad_u = torch.einsum(
@@ -178,10 +189,18 @@ class PIELMSolver:
             )
         return self._basis
 
+    def _require_beta(self):
+        if self.beta is None:
+            raise RuntimeError(
+                "solver.beta is not set: assemble and solve the system before "
+                "calling predict().")
+
     def predict(self, x):
+        self._require_beta()
         return self.basis.evaluate(x) @ self.beta
 
     def predict_with_grad(self, x):
+        self._require_beta()
         cache = self.basis.cache(x)
         u = self.basis.evaluate(x, cache=cache) @ self.beta
         grad_u = torch.einsum(

@@ -315,7 +315,17 @@ class PolynomialColumns:
                 "symbol operators, or pin the offset with a boundary row."
             )
         zero = torch.zeros(self.dim, 1, device=x.device, dtype=x.dtype)
-        m_val = m(zero) if callable(m) and not isinstance(m, torch.Tensor) else m
+        if callable(m) and not isinstance(m, torch.Tensor):
+            m_val = m(zero)
+        else:
+            m_val = torch.as_tensor(m, device=x.device)
+            if m_val.numel() != 1:
+                # A per-feature (1, N) symbol says nothing about m(0); taking
+                # its first entry would silently be the first feature's value.
+                raise ValueError(
+                    "PolynomialColumns.symbol: a precomputed symbol tensor must be "
+                    "a single constant multiplier (numel() == 1); pass the symbol "
+                    "as a callable so it can be evaluated at xi = 0.")
         m_val = torch.as_tensor(m_val, device=x.device).reshape(-1)[:1]
         if m_val.is_complex():
             # An operator that maps real functions to real functions has a
