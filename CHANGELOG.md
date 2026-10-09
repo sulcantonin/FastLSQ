@@ -60,6 +60,160 @@ this file jumps 0.1.0 → 0.2.0 → 0.1.5 and does not describe them. Reconstruc
 changelog entries a year after the fact would be invention rather than record, so the
 gap is documented here instead of filled in.
 
+## [0.7.1] - 2026-10-09
+
+A correctness and hygiene release from a line-by-line audit of the package.
+Every item below was first reproduced on 0.7.0, then fixed, and each fix has a
+regression test in `tests/test_audit_regressions.py`.  The closed-form
+mathematics -- derivatives, integrals, Fourier symbols, the Radon projection, the
+Stokes singularities, every built-in problem's exact solution and Jacobian -- was
+checked against autograd and finite differences and found correct; nothing in
+that layer changes.
+
+### Security
+
+- **`load_checkpoint` no longer unpickles arbitrary objects.** It used
+  `torch.load(weights_only=False)` because `to_dict` stored NumPy arrays, which
+  the safe mode rejects; a crafted `.pt` therefore executed code on load.
+  `to_dict` / `save_checkpoint` now store CPU tensors and `load_checkpoint` reads
+  with `weights_only=True`.  Files written by 0.7.0 and earlier need
+  `load_checkpoint(path, allow_pickle=True)`, which should only be used on files
+  from a trusted source.  Checkpoint `metadata` must consist of plain Python
+  values and tensors.
+
+### Fixed
+
+- **Solves no longer reset the global RNG.** `evaluate_error` seeded
+  `torch.manual_seed(999)` for its fixed test set, and `auto_select_scale` seeded
+  every trial, both on the *global* generator.  Any `solve_linear` /
+  `solve_nonlinear` with metrics therefore left torch's RNG at a fixed state: two
+  consecutive solves drew identical random features, and a user's own random
+  draws afterwards were deterministic regardless of their seed, so repeated-trial
+  statistics had zero variance.  Both now run inside `fastlsq.utils.preserve_rng`,
+  which saves and restores the torch (CPU and active CUDA/MPS) and NumPy state.
+  The fixed test set is unchanged, so reported errors are as before.
+- **`set_device()` is honoured everywhere.** `problems/linear.py`,
+  `problems/integral.py`, `plotting.py` and `lightning.py` bound
+  `fastlsq.utils.device`, an import-time snapshot, instead of calling
+  `get_device()`; after `set_device("mps")` (or `"cuda"`) their tensors stayed
+  on CPU and the solve failed with a device mismatch.  `from_dict` /
+  `load_checkpoint` also defaulted to "CUDA if available" rather than the active
+  device.
+- **`solve_nonlinear` forwards `tol_res`, `tol_du` and `damping` on the
+  continuation path.** Problems with `use_continuation` (`SteadyBurgers1D`) ran
+  every stage with `newton_solve`'s own defaults (1e-12 / 1e-13 / 1.0) whatever
+  the caller passed.
+- **`solve_lstsq` accepts a 1-D right-hand side.** A `(M,)` `b` crashed in four
+  back-ends and, in the ridged SVD path, silently broadcast to an `(N, N)` result.
+  It is now treated as a single column and the solution returned 1-D; a `b`
+  whose row count does not match `A` raises `ValueError`.
+- **`LearnableFastLSQ`:**
+  - `solve_cached` left `beta` flat and `_beta_flat` unset for `n_outputs > 1`,
+    so `predict` failed with a shape mismatch after a cached solve; it now does
+    the same bookkeeping as `solve_inner`.
+  - scalar mode built `torch.eye(..., device=get_device())` in the default dtype,
+    so a module moved with `.to(torch.float32)` or `.to("cuda")` failed in that
+    mode only; the identity now follows the parameter's device and dtype.  The
+    parameters are created from Python floats so they take torch's default dtype
+    (a NumPy scalar pinned `log_sigma` to float64 under a float32 default).
+  - `train_bandwidth` with `mu > 0` differentiated the wrong objective: the
+    detached-`beta*` (envelope) gradient is exact for the *ridge* objective the
+    inner solve minimises, but the outer loss was the plain residual, so the
+    gradient was off by the cross term `-mu beta*` (2.6x against finite
+    differences at `mu = 0.1`).  The outer loss now includes
+    `mu ||beta*||^2 / M`.  The default `mu = 0` was never affected.
+  - `train_bandwidth` used `AdamW` with its default `weight_decay = 0.01`, a
+    hidden prior pulling every log-bandwidth toward `sigma = 1` independent of the
+    loss (sigma 25 -> 17 over 120 steps with a zero gradient).  The new
+    `weight_decay` argument defaults to 0.
+  - the log-bandwidth clamp `[-3, 6.5]` applied in diagonal and Cholesky mode
+    but not scalar mode, and was undocumented.  It is now `LOG_SCALE_MIN` /
+    `LOG_SCALE_MAX`, applied in every mode and documented; an `init_scale`
+    outside `[0.05, 665]` raises at construction instead of being silently capped.
+- **Boundary projection is scale-free.** `project_to_boundary`,
+  `sample_boundary_sdf` and `outward_normal` tested `|psi| < tol` and
+  `||grad psi||^2 > 1e-12` as absolute numbers, so a down-scaled implicit function
+  (`1e-7 * (|x| - 1)`) was never projected and its "boundary" sample was interior
+  points.  Convergence is now measured by the Newton step length
+  `|psi| / ||grad psi||`, a distance, and a gradient counts as degenerate relative
+  to the largest in the batch.  `project_to_boundary` and `outward_normal` accept
+  empty input, and `SDFDomain` / `_as_bounds` clone a caller's bounds tensor
+  instead of aliasing it.
+- **`check_problem`** used a forward difference with a fixed `1e-5` step and a
+  `1e-3` threshold, which flagged correct gradients as wrong under float32; it now
+  uses a central difference with a dtype-chosen step and tolerance.  The
+  "BC consistency" check its docstring promised is implemented (Dirichlet data
+  against `exact()` at the boundary points, reported as `bc_check`),
+  `gradient_check` is `False` when `exact()` raises, and vector problems
+  (`n_outputs = k`) are checked against `(n, k)` / `(n, dim, k)` instead of being
+  reported as shape failures.  `suggest_scale`'s docstring now says what it does
+  (a dimension-only heuristic; `n_trials` is ignored).
+- **`Wave1D`** returned `(x_pde, bcs)` and took `build(solver, x, bcs)`, so
+  `train_bandwidth` and the Newton-mode scale search crashed on it.  It now
+  follows the `(x_pde, bcs, f_pde)` contract (with a zero forcing and a `source`
+  method); `build` still accepts the old call.
+- **Plotting.** `plot_solution_1d` / `plot_solution_2d_slice` / contour /
+  convergence / spectral saved and closed `plt.gcf()` rather than the figure they
+  drew on, so with a caller-supplied `ax` the wrong figure was written and an
+  unrelated one closed.  `plot_convergence([])` raises `ValueError` instead of
+  `IndexError`; `viz.hero_figure_landscape(ncols=1)` no longer crashes.
+- **`PolynomialColumns.symbol`** with a precomputed `(1, N)` tensor took the first
+  feature's value as `m(0)`; a tensor symbol must now be a single constant
+  (`numel() == 1`) or the call raises.
+- **`MirrorBasis`** lacked `symbol`, `definite_integral`, `multi_integral`,
+  `iterated_integral`, `advection` and `biharmonic`, so `SymbolOperator`,
+  `IntegralOperator` and `MultiIntegralOperator` failed on it with
+  `AttributeError`; all are implemented bank by bank (exact, since the mirror bank
+  is itself a bank of plane waves).
+- `FastLSQSolver.predict*` and `PIELMSolver.predict*` raise a `RuntimeError`
+  naming `beta` when called before a solve, and `.basis` raises when no block has
+  been added, instead of a `TypeError` on `None`.
+- `to_dict` raises `ValueError` on an unsolved solver instead of `AttributeError`,
+  always writes `input_dim` / `normalize` (without them `from_dict` could not
+  rebuild the solver even though `include_metadata=False` was documented).
+- `solve_lstsq(..., return_info=True)` documents that under `method="rsvd"`
+  `rank_used` and `cond_estimate` describe the rank-`k` sketch, not the matrix.
+
+### Changed
+
+- **Newton line search reuses the accepted trial's Jacobian.** `newton_solve`
+  assembled `(J, -R)` at every backtracking trial, discarded `J`, and rebuilt it
+  at the top of the next iteration; the accepted pair is now carried over, saving
+  one full assembly per iteration.  Results are identical.
+- `plot_solution_2d_contour` always returns `(fig, (ax_pred, ax_exact))`, with
+  `ax_exact = None` when `plot_exact=False` (it returned a 1-tuple before, against
+  its docstring).
+- The import-time `torch.set_default_dtype(torch.float64)` is kept -- the
+  package's accuracy regime and the built-in problems depend on it -- but is now
+  documented in `fastlsq.device` and can be disabled with the environment
+  variable `FASTLSQ_KEEP_DEFAULT_DTYPE=1` for processes that must not have their
+  default dtype changed by an import.
+
+### Removed
+
+- The `battery` optional-dependency group (`progpy`, pandas, scipy) and the
+  `openpyxl` pin in `requirements.txt`: both referred to battery-degradation
+  examples that no longer exist in the repository.
+
+### Tests
+
+- `tests/conftest.py` restores torch's default dtype after every test.  Two
+  tests switched to float32 without restoring it, so the suite's outcome depended
+  on execution order (`test_solve_linear_phased_metrics` followed by
+  `test_problems_integral.py` failed seven accuracy assertions).
+- `tests/test_audit_regressions.py`: one test per fix above.
+- `tests/test_basic.py`: the float32 solve must now beat the trivial `u = 0`
+  predictor by a margin and return the right shape; the nonlinear solve must
+  converge and reach `val_err < 1e-3`; `check_problem` must pass its gradient
+  and boundary checks.
+
+### Not changed, deliberately
+
+- `presentations/ATAP_Sulc_20260324.pptx` (28 MB) and `misc/inverse_heat_source.gif`
+  (11 MB) remain tracked because `README.md` links to them.  Moving them to the
+  website repository or a release asset would shrink clones; it is a judgement
+  call left to the maintainer.
+
 ## [0.7.0] - 2026-10-08
 
 Steady incompressible Navier-Stokes, upstreamed from the solver behind the

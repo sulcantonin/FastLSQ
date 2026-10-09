@@ -26,6 +26,19 @@ Householder QR -> rank-revealing SVD) that runs on CPU, CUDA, or Apple-MPS.
 Nonlinear PDEs are solved via Newton-Raphson iteration with Tikhonov
 regularisation, 1/sqrt(N) feature normalisation, and continuation/homotopy.
 
+**Contents:**
+[Installation](#installation) ·
+[Quick start](#quick-start) ·
+[Core architecture](#core-architecture) ·
+[Adding your own PDE](#adding-your-own-pde) ·
+[Features](#features) ·
+[Development](#development) ·
+[Contributing](#contributing) ·
+[Releases](#releases-and-versioning) ·
+[Paper](#paper) ·
+[Citing](#citing-this-work) ·
+[License](#license)
+
 ## Installation
 
 ```bash
@@ -43,11 +56,19 @@ compare against, and the build tools:
 git clone https://github.com/sulcantonin/FastLSQ.git
 cd FastLSQ
 pip install -e ".[dev]"
-pytest tests/          # 251 tests, about 30 s on a laptop CPU
+pytest tests/          # about 30 s on a laptop CPU
 ```
 
-Optional extras: `.[battery]` for the battery-degradation examples (`progpy`),
-`.[lightning]` for the PyTorch Lightning training loop.
+Optional extra: `.[lightning]` for the PyTorch Lightning training loop.
+
+> **One global setting.** `import fastlsq` calls `torch.set_default_dtype(torch.float64)`
+> once, because the ~1e-12 accuracy regime needs double precision and the built-in
+> problems create their tensors in the default dtype.  This affects every torch
+> tensor created afterwards in the same process.  Set `FASTLSQ_KEEP_DEFAULT_DTYPE=1`
+> in the environment before importing to opt out (float32 then gives ~1e-6
+> accuracy and makes Apple-MPS eligible).  Nothing else in the library touches
+> global state: solves leave torch's and NumPy's random generators exactly where
+> they found them.
 
 ## Quick start
 
@@ -380,9 +401,28 @@ shader can evaluate without fastlsq; the wind tunnel on
 ```python
 from fastlsq.plotting import plot_solution_2d_contour, plot_convergence
 
+result = solve_nonlinear(problem, return_solver=True)   # "solver" is opt-in
 plot_solution_2d_contour(result["solver"], problem, save_path="solution.png")
 plot_convergence(result["history"], problem_name=problem.name, save_path="convergence.png")
 ```
+
+### Save, load and reproduce
+
+```python
+from fastlsq import save_checkpoint, load_checkpoint
+
+save_checkpoint(result["solver"], "poisson.pt", metadata={"scale": result["scale"]})
+solver, meta = load_checkpoint("poisson.pt")      # torch.load(weights_only=True)
+```
+
+Checkpoints are read in torch's safe mode, which cannot execute code embedded in
+a file.  A file written by FastLSQ 0.7.0 or earlier stored NumPy arrays and needs
+`load_checkpoint(path, allow_pickle=True)`; use that only on files you trust.
+
+Seeding is yours: `torch.manual_seed(s)` before a solve makes the random features
+reproducible, and the library restores the global generators after its own
+internal draws (the fixed error-evaluation set, the scale-search trials), so a
+loop of solves gives independent trials.
 
 ### Benchmarks
 
@@ -545,15 +585,34 @@ pip install -e ".[dev]"
 pytest tests/
 ```
 
-The suite is 282 tests and runs in about 30 seconds on a laptop CPU.  Every closed
-form -- derivative, integral, Fourier symbol, projection -- is checked against an
-independent reference (autograd, Gauss-Legendre quadrature, or the analytic value) in
-`tests/test_closed_forms_property.py`, so a wrong closed form fails the suite rather
-than silently returning a plausible number.
+The suite is 318 tests and runs in about 30 seconds on a laptop CPU.  Every closed
+form -- derivative, integral, Fourier symbol, projection, Stokes singularity -- is
+checked against an independent reference (autograd, Gauss-Legendre quadrature, or
+the analytic value), so a wrong closed form fails the suite rather than silently
+returning a plausible number.  `tests/test_audit_regressions.py` pins one test to
+every defect fixed in 0.7.1, and `tests/conftest.py` restores torch's default
+dtype after each test so the suite's outcome does not depend on ordering.
 
 [Continuous integration](https://github.com/sulcantonin/FastLSQ/actions/workflows/tests.yml)
 runs the suite on Python 3.9, 3.10, 3.11 and 3.12, and separately builds the sdist and
 wheel and checks their metadata.
+
+## Contributing
+
+Bug reports and pull requests are welcome on the
+[issue tracker](https://github.com/sulcantonin/FastLSQ/issues).  For a change to
+the library:
+
+1. Install the development extras (`pip install -e ".[dev]"`) and make sure
+   `pytest tests/` passes on your machine.
+2. Add a test next to the code you change; a closed form needs a check against an
+   independent reference (autograd or quadrature), a bug fix needs a test that
+   failed before the fix.
+3. Keep the public API documented in the docstring and note user-visible changes
+   in `CHANGELOG.md` under an *Unreleased* heading.
+
+Please report anything that looks like a security problem (for example in
+checkpoint loading) privately to the maintainer rather than in a public issue.
 
 ## Releases and versioning
 
