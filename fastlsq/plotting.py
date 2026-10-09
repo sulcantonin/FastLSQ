@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from typing import Optional, Tuple, List, Dict, Any
 
 from fastlsq.solvers import FastLSQSolver
-from fastlsq.utils import device
+from fastlsq.device import get_device
 
 
 # ======================================================================
@@ -58,7 +58,7 @@ def plot_solution_1d(
     -------
     ax : matplotlib.Axes
     """
-    x_plot = torch.linspace(x_min, x_max, n_points, device=device).unsqueeze(1)
+    x_plot = torch.linspace(x_min, x_max, n_points, device=get_device()).unsqueeze(1)
     u_pred = solver.predict(x_plot).cpu().numpy()
     u_exact = problem.exact(x_plot).cpu().numpy()
 
@@ -85,8 +85,11 @@ def plot_solution_1d(
         ax.set_title(title)
 
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        plt.close()
+        # Save and close the figure this axis belongs to, not whichever figure
+        # happens to be current (a caller-supplied ``ax`` may live elsewhere).
+        fig = ax.figure
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
 
     return ax
 
@@ -133,7 +136,7 @@ def plot_solution_2d_slice(
     -------
     ax : matplotlib.Axes
     """
-    x_plot = torch.linspace(x_min, x_max, n_points, device=device).unsqueeze(1)
+    x_plot = torch.linspace(x_min, x_max, n_points, device=get_device()).unsqueeze(1)
     if dim == 0:
         x_full = torch.cat([x_plot, slice_val * torch.ones_like(x_plot)], dim=1)
         xlabel = "x"
@@ -159,8 +162,11 @@ def plot_solution_2d_slice(
         ax.set_title(title)
 
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        plt.close()
+        # Save and close the figure this axis belongs to, not whichever figure
+        # happens to be current (a caller-supplied ``ax`` may live elsewhere).
+        fig = ax.figure
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
 
     return ax
 
@@ -201,12 +207,13 @@ def plot_solution_2d_contour(
     Returns
     -------
     fig : matplotlib.Figure
-    axes : tuple of matplotlib.Axes
+    axes : tuple (ax_pred, ax_exact)
+        ``ax_exact`` is ``None`` when ``plot_exact=False``.
     """
     x = np.linspace(x_min, x_max, n_points)
     y = np.linspace(y_min, y_max, n_points)
     X, Y = np.meshgrid(x, y)
-    xy = torch.tensor(np.stack([X.ravel(), Y.ravel()], axis=1), device=device)
+    xy = torch.tensor(np.stack([X.ravel(), Y.ravel()], axis=1), device=get_device())
 
     u_pred = solver.predict(xy).cpu().numpy().reshape(X.shape)
     u_exact = problem.exact(xy).cpu().numpy().reshape(X.shape)
@@ -230,13 +237,13 @@ def plot_solution_2d_contour(
         ax2.set_title("Exact Solution")
         plt.colorbar(im2, ax=ax2)
 
-    plt.tight_layout()
+    fig.tight_layout()
 
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        plt.close()
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
 
-    return fig, (ax1, ax2) if plot_exact else (ax1,)
+    return fig, (ax1, ax2)
 
 
 # ======================================================================
@@ -269,6 +276,8 @@ def plot_convergence(
     fig : matplotlib.Figure
     axes : tuple of matplotlib.Axes
     """
+    if not history:
+        raise ValueError("plot_convergence: history is empty (no Newton iterations)")
     # Handle single history vs list of histories
     if isinstance(history[0], dict):
         histories = [history]
@@ -304,8 +313,8 @@ def plot_convergence(
     plt.tight_layout()
 
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        plt.close()
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
 
     return fig, (ax1, ax2)
 
@@ -353,7 +362,7 @@ def plot_spectral_sensitivity(
     plt.tight_layout()
 
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        plt.close()
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
 
     return fig, ax

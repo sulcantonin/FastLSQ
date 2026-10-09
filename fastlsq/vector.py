@@ -60,7 +60,6 @@ import torch
 
 from fastlsq.basis import SinusoidalBasis
 from fastlsq.solvers import FastLSQSolver
-from fastlsq.utils import device
 from fastlsq.device import get_device
 
 
