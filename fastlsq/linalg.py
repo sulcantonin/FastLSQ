@@ -219,7 +219,9 @@ def solve_lstsq(A, b, mu=0.0, rcond=1e-12, method="auto",
     Parameters
     ----------
     A : Tensor, shape (M, N)
-    b : Tensor, shape (M, K)
+    b : Tensor, shape (M, K) or (M,)
+        A 1-D ``b`` is treated as a single right-hand side and the solution is
+        returned 1-D, shape (N,).
     mu : float
         Tikhonov ridge (applied via spectral filtering / normal-equations, not as
         an unstable add-on).
@@ -239,18 +241,36 @@ def solve_lstsq(A, b, mu=0.0, rcond=1e-12, method="auto",
         the data residual ``||A x - b||``; ``cond_estimate`` is ``s_max / s_min``
         over the retained subspace.  The diagnostic singular values are computed
         *outside* the timed region (one extra ``svdvals`` when the chosen back-end
-        did not already form an SVD), so ``t_solve`` stays honest.
+        did not already form an SVD), so ``t_solve`` stays honest.  For
+        ``method="rsvd"`` the spectrum is that of the rank-``k`` sketch
+        (``k = rank + oversample``), so ``rank_used`` is at most ``k`` and
+        ``cond_estimate`` covers only the captured subspace; neither describes
+        the full matrix.
 
     Returns
     -------
-    x : Tensor, shape (N, K)
+    x : Tensor, shape (N, K)  (or (N,) for a 1-D ``b``)
     info : dict, only if ``return_info=True``
     """
+    if A.dim() != 2:
+        raise ValueError(f"solve_lstsq: A must be 2-D (M, N); got shape {tuple(A.shape)}")
+    # Normalise the right-hand side to (M, K).  Every back-end assumes a column
+    # block; a 1-D b used to crash in most of them and -- worse -- silently
+    # broadcast to an (N, N) result in the ridged SVD path.
+    squeeze_out = b.dim() == 1
+    if squeeze_out:
+        b = b.unsqueeze(-1)
+    if b.dim() != 2 or b.shape[0] != A.shape[0]:
+        raise ValueError(
+            f"solve_lstsq: b must have shape (M, K) or (M,) with M = {A.shape[0]}; "
+            f"got {tuple(b.shape)}")
+
     A2, b2, mps_dev = _maybe_cpu(A, b)
 
     if not return_info:
         x, _, _ = _dispatch(A2, b2, mu, rcond, method, rank, oversample, n_iter)
-        return x.to(mps_dev) if mps_dev is not None else x
+        x = x.to(mps_dev) if mps_dev is not None else x
+        return x.squeeze(-1) if squeeze_out else x
 
     _sync_device(A2.device)
     t0 = time.perf_counter()
@@ -283,6 +303,8 @@ def solve_lstsq(A, b, mu=0.0, rcond=1e-12, method="auto",
         "method_used": method_used,
     }
     x_out = x.to(mps_dev) if mps_dev is not None else x
+    if squeeze_out:
+        x_out = x_out.squeeze(-1)
     return x_out, info
 
 
