@@ -58,10 +58,23 @@ class LearnableFastLSQ(nn.Module):
         * ``"diagonal"`` -- per-dimension learnable scales (axis-aligned).
         * ``"cholesky"`` -- full learnable Cholesky factor L (anisotropic).
     init_scale : float
-        Initial value for sigma (scalar mode) or diagonal of L.
+        Initial value for sigma (scalar mode) or diagonal of L.  Must lie in
+        ``[exp(LOG_SCALE_MIN), exp(LOG_SCALE_MAX)]`` (about 0.05 to 665).
     normalize : bool
         Apply 1/sqrt(N) normalization to features.
+
+    Notes
+    -----
+    The log-bandwidth parameters are clamped to ``[LOG_SCALE_MIN, LOG_SCALE_MAX]``
+    in **every** mode before exponentiation, so an optimiser step can never push
+    the bandwidth to a numerically meaningless value.  A clamp has zero gradient
+    once it is active, so a bandwidth that reaches a bound stays there; choose
+    ``init_scale`` and the learning rate so that the useful range is interior.
     """
+
+    # Bounds on log(bandwidth); e^-3 ~ 0.05, e^6.5 ~ 665.
+    LOG_SCALE_MIN = -3.0
+    LOG_SCALE_MAX = 6.5
 
     def __init__(
         self,
@@ -78,6 +91,13 @@ class LearnableFastLSQ(nn.Module):
         self.n_outputs = n_outputs
         self.mode = mode
         self._normalize = normalize
+        log_init = math.log(float(init_scale))
+        if not (self.LOG_SCALE_MIN <= log_init <= self.LOG_SCALE_MAX):
+            raise ValueError(
+                f"init_scale={init_scale} is outside the representable bandwidth "
+                f"range [{math.exp(self.LOG_SCALE_MIN):.3g}, "
+                f"{math.exp(self.LOG_SCALE_MAX):.3g}]; rescale the problem's "
+                "coordinates instead.")
 
         # Frozen base weights: W_hat ~ N(0, I_d),  b ~ U(0, 2*pi)
         self.register_buffer(
@@ -88,19 +108,21 @@ class LearnableFastLSQ(nn.Module):
         )
 
         # Learnable bandwidth parameters
+        # Plain Python floats so every parameter takes torch's default dtype
+        # (a NumPy float64 scalar would pin log_sigma to float64 under float32).
         if mode == "scalar":
             self.log_sigma = nn.Parameter(
-                torch.tensor(np.log(init_scale), device=get_device())
+                torch.tensor(log_init, device=get_device())
             )
         elif mode == "diagonal":
             self.log_diag = nn.Parameter(
-                torch.full((input_dim,), np.log(init_scale), device=get_device())
+                torch.full((input_dim,), log_init, device=get_device())
             )
         elif mode == "cholesky":
             # exp(diag) keeps Sigma = L L^T positive-definite and learns at the
             # same multiplicative rate as the diagonal mode; isotropic start.
             L_init = torch.zeros(input_dim, input_dim, device=get_device())
-            L_init.diagonal().fill_(float(np.log(init_scale)))
+            L_init.diagonal().fill_(log_init)
             self.L_raw = nn.Parameter(L_init)
         else:
             raise ValueError(f"Unknown mode {mode!r}")
@@ -118,14 +140,17 @@ class LearnableFastLSQ(nn.Module):
 
     def _effective_L(self) -> torch.Tensor:
         """Return the d x d scaling / Cholesky matrix."""
+        lo, hi = self.LOG_SCALE_MIN, self.LOG_SCALE_MAX
         if self.mode == "scalar":
-            sigma = self.log_sigma.exp()
-            return sigma * torch.eye(self.input_dim, device=get_device())
+            sigma = self.log_sigma.clamp(lo, hi).exp()
+            # Follow the parameter's device/dtype so nn.Module.to() works.
+            return sigma * torch.eye(self.input_dim, device=self.log_sigma.device,
+                                     dtype=self.log_sigma.dtype)
         elif self.mode == "diagonal":
-            return torch.diag(self.log_diag.clamp(-3.0, 6.5).exp())
+            return torch.diag(self.log_diag.clamp(lo, hi).exp())
         else:  # cholesky: free strictly-lower part + log-positive diagonal
             off = torch.tril(self.L_raw, diagonal=-1)
-            diag = torch.diagonal(self.L_raw).clamp(-3.0, 6.5).exp()
+            diag = torch.diagonal(self.L_raw).clamp(lo, hi).exp()
             return off + torch.diag(diag)
 
     @property
@@ -245,10 +270,19 @@ class LearnableFastLSQ(nn.Module):
         self._cached_pinv = torch.linalg.pinv(A)
 
     def solve_cached(self, b: torch.Tensor) -> torch.Tensor:
-        """Solve beta = A^+ b using the cached pseudo-inverse."""
+        """Solve beta = A^+ b using the cached pseudo-inverse.
+
+        Keeps the same ``beta`` / ``_beta_flat`` bookkeeping as
+        :meth:`solve_inner`, so ``predict`` works for ``n_outputs > 1`` too.
+        """
         if self._cached_pinv is None:
             raise RuntimeError("Call cache_operator(A) first.")
-        self.beta = self._cached_pinv @ b
+        beta_flat = self._cached_pinv @ b
+        self._beta_flat = beta_flat
+        if self.n_outputs > 1:
+            self.beta = unpack_beta(beta_flat, self.n_features, self.n_outputs)
+        else:
+            self.beta = beta_flat
         return self.beta
 
     def clear_cache(self):
@@ -289,13 +323,15 @@ def train_bandwidth(
     mu: float = 0.0,
     rcond: float = 1e-12,
     clip_grad: float = 10.0,
+    weight_decay: float = 0.0,
     verbose: bool = True,
 ) -> list[dict]:
     """Hybrid training: differentiable inner solve + outer AdamW on the bandwidth.
 
     At each step the PDE matrix ``A(L)`` is assembled, ``beta*(L)`` is solved by a
-    **rank-revealing** (truncated-SVD) inner solve, and the outer loss
-    ``||A beta* - b||^2`` is backpropagated to ``L``.  The loop is robust:
+    **rank-revealing** (truncated-SVD) inner solve, and the outer objective
+    ``(||A beta* - b||^2 + mu ||beta*||^2) / M`` -- the same ridge objective the
+    inner solve minimises -- is backpropagated to ``L``.  The loop is robust:
     gradients are clipped, the best iterate is retained, and a failed inner SVD
     stops training gracefully.  Defaults (``mu=0``, ``lr=0.1``) match the
     validated diagonal/cholesky configuration.
@@ -307,12 +343,17 @@ def train_bandwidth(
     learnable : LearnableFastLSQ
     problem : object with ``get_train_data(n_pde, n_bc)`` and ``build(learnable, x, bcs, f)``.
     n_pde, n_bc, n_steps, lr, mu, rcond, clip_grad, verbose : see above.
+    weight_decay : float
+        AdamW decoupled weight decay on the *log-bandwidth* parameters.  The
+        default is ``0``: any decay is a prior pulling the bandwidth toward
+        ``sigma = 1`` independently of the loss, which is rarely wanted (the
+        AdamW default of 0.01 moved sigma from 25 to 17 with a zero gradient).
 
     Returns
     -------
     history : list[dict]  -- per-step loss / sigma (and covariance diagonal for cholesky).
     """
-    optimizer = torch.optim.AdamW(learnable.parameters(), lr=lr)
+    optimizer = torch.optim.AdamW(learnable.parameters(), lr=lr, weight_decay=weight_decay)
     history = []
     x_pde, bcs, f_pde = problem.get_train_data(n_pde=n_pde, n_bc=n_bc)
 
@@ -324,11 +365,15 @@ def train_bandwidth(
         A, b_rhs = problem.build(learnable, x_pde, bcs, f_pde)
         try:
             # beta* is solved under no_grad, i.e. *detached* from L, on purpose.
-            # At the least-squares optimum the residual r = A beta* - b is
-            # orthogonal to range(A), so the chain-rule term through beta* is
-            # (dJ/dbeta)^T dbeta*/dL = 2 (A^T r)^T dbeta*/dL = 0 and the total
-            # derivative collapses to the partial one (envelope theorem):
+            # beta* minimises F(L, beta) = ||A beta - b||^2 + mu ||beta||^2, so
+            # dF/dbeta = 2 (A^T r + mu beta*) = 0 there and the chain-rule term
+            # through beta* vanishes; the total derivative of J(L) = F(L, beta*(L))
+            # collapses to the partial one (envelope theorem):
             #     dJ/dL = 2 r^T (dA/dL) beta*.
+            # This holds for the *ridge* objective, which is why the outer loss
+            # below includes the mu ||beta*||^2 term: with the plain residual as
+            # the loss, A^T r = -mu beta* != 0 and the detached gradient would be
+            # off by that cross term whenever mu > 0 (default mu = 0 is unaffected).
             # Detaching is therefore *exact*, not an approximation -- and it is
             # the only usable route: lstsq's backward carries a (A^T A)^-1, which
             # squares cond(A) (~2e11 for this problem, so ~5e22) far past what
@@ -344,7 +389,13 @@ def train_bandwidth(
         # _beta_flat is block-stacked and shape-compatible with A (for n_outputs>1);
         # learnable.beta may be reshaped to (N, k), so the loss uses _beta_flat.
         # A keeps its graph, so dJ/dL still flows through the assembled operator.
-        loss = torch.mean((A @ learnable._beta_flat - b_rhs) ** 2)
+        beta_flat = learnable._beta_flat
+        loss = torch.mean((A @ beta_flat - b_rhs) ** 2)
+        if mu and mu > 0.0:
+            # Ridge term of the inner objective, on the same per-row scale.  It
+            # carries no gradient w.r.t. L (beta* is detached) but makes the loss
+            # the one whose gradient the envelope theorem delivers.
+            loss = loss + mu * (beta_flat ** 2).sum() / A.shape[0]
         if not torch.isfinite(loss):
             if verbose:
                 print(f"  Step {step:4d}: non-finite loss -- stopping.")
