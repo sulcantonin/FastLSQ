@@ -109,7 +109,12 @@ def test_solve_linear():
     )
     assert "u_fn" in result
     assert "metrics" in result
-    assert result["metrics"]["val_err"] < 1.0  # Reasonable error
+    # float32 path: 400 features on a 5-D problem is a coarse fit, but it must
+    # beat the trivial u = 0 predictor (val_err == 1.0) by a clear margin, and the
+    # pipeline must run end to end in single precision.
+    ve = result["metrics"]["val_err"]
+    assert np.isfinite(ve) and ve < 0.5, f"float32 PoissonND val_err {ve:.2e}"
+    assert result["u_fn"](torch.rand(7, 5)).shape == (7, 1)
 
 
 def test_solve_nonlinear():
@@ -129,6 +134,11 @@ def test_solve_nonlinear():
     assert "u_fn" in result
     assert "history" in result
     assert result["n_iters"] > 0
+    # every step accepted, and the answer is right (the default tolerances are
+    # tighter than this small basis can reach, so the loop may run to max_iter)
+    assert all(h["line_search"] == "accepted" for h in result["history"])
+    assert "stop" in result["history"][-1]
+    assert result["metrics"]["val_err"] < 1e-3, result["metrics"]
 
 
 def test_check_problem():
@@ -136,6 +146,8 @@ def test_check_problem():
     problem = PoissonND()
     results = check_problem(problem, verbose=False)
     assert results["shape_check"]
+    assert results["gradient_check"], results["warnings"]
+    assert results["bc_check"], results["warnings"]
     assert results["data_check"]
 
 
