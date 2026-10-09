@@ -257,6 +257,9 @@ def _as_bounds(
             f"bounds must be (lo, hi) or a per-axis sequence of pairs; "
             f"got shape {tuple(t.shape)}"
         )
+    # Own the result: torch.as_tensor returns the caller's tensor when nothing
+    # needs converting, and a domain must not change when the caller edits it.
+    out = out.clone()
 
     if not (out[1] > out[0]).all():
         raise ValueError(
@@ -378,6 +381,12 @@ def project_to_boundary(
 ) -> torch.Tensor:
     """Project points onto the zero level set ``{ψ = 0}``.
 
+    All thresholds are **scale-free**: convergence is measured by the Newton
+    step length ``|ψ|/‖∇ψ‖`` (a distance, whatever the units of ``ψ``), and a
+    gradient counts as degenerate relative to the largest gradient in the batch.
+    Multiplying ``ψ`` by a constant therefore changes nothing, as the docstring
+    of :func:`sample_sdf` promises for a general implicit function.
+
     Each step is the Newton correction along the normal::
 
         x ← x − ψ(x) ∇ψ(x) / ‖∇ψ(x)‖²
@@ -403,12 +412,14 @@ def project_to_boundary(
     x : Tensor, shape (M, d)
         Seed points, typically from :func:`sample_sdf` or the bounding box.
     n_iter : int
-        Maximum Newton steps.  Stops early once ``max|ψ| < tol``.
+        Maximum Newton steps.  Stops early once every Newton step length
+        ``|ψ|/‖∇ψ‖`` is below ``tol``.
     tol : float
-        Convergence threshold on ``|ψ|``.
+        Convergence threshold on the step length (in coordinate units).
     grad_eps : float
-        Steps are skipped where ``‖∇ψ‖²`` falls below this, which happens at
-        medial-axis / cusp points where the normal is undefined.
+        Steps are skipped where ``‖∇ψ‖²`` falls below ``grad_eps`` times the
+        largest ``‖∇ψ‖²`` in the batch, which happens at medial-axis / cusp
+        points where the normal is undefined.
     n_backtrack : int
         Maximum halvings per step.
 
@@ -421,15 +432,20 @@ def project_to_boundary(
         :func:`sample_boundary_sdf` does this for you.
     """
     xb = x.detach().clone()
+    if xb.shape[0] == 0:
+        return xb
+    tiny = torch.finfo(xb.dtype).tiny
     val, grad = _value_and_grad(psi, xb)
 
     for _ in range(n_iter):
-        if val.abs().max() < tol:
-            break
         gn2 = (grad ** 2).sum(dim=1)
+        ok = gn2 > grad_eps * gn2.max().clamp_min(tiny)
+        step_len = val.abs() / gn2.clamp_min(tiny).sqrt()
+        if not bool((step_len[ok] >= tol).any()):
+            break
         direction = torch.where(
-            (gn2 > grad_eps).unsqueeze(1),
-            (val / gn2.clamp_min(grad_eps)).unsqueeze(1) * grad,
+            ok.unsqueeze(1),
+            (val / gn2.clamp_min(tiny)).unsqueeze(1) * grad,
             torch.zeros_like(grad),
         )
 
@@ -438,7 +454,7 @@ def project_to_boundary(
         cand = xb - direction
         cval = psi(cand).reshape(-1)
         for _ in range(n_backtrack):
-            worse = (cval.abs() > val.abs()) & (val.abs() > tol)
+            worse = (cval.abs() > val.abs()) & (step_len >= tol)
             if not bool(worse.any()):
                 break
             t = torch.where(worse.unsqueeze(1), t * 0.5, t)
@@ -462,6 +478,23 @@ def _fd_grad(psi: SDFT, x: torch.Tensor, h: float) -> torch.Tensor:
         e[:, k] = h
         g[:, k] = (psi(x + e).reshape(-1) - psi(x - e).reshape(-1)) / (2.0 * h)
     return g
+
+
+def _robust_grad(
+    psi: SDFT, x: torch.Tensor, grad_eps: float = 1e-12, fd_step: float = 1e-6
+) -> torch.Tensor:
+    """``∇ψ(x)`` by autograd, with a central-difference fallback where autograd
+    returns a degenerate gradient (relative to the largest in the batch, or
+    everywhere when the whole batch is degenerate).  See :func:`outward_normal`
+    for why the fallback is needed on a floored ``sqrt(min d²)`` distance."""
+    tiny = torch.finfo(x.dtype).tiny
+    _, grad = _value_and_grad(psi, x)
+    norm = grad.norm(dim=1)
+    degenerate = norm <= grad_eps * norm.max().clamp_min(tiny)
+    if bool(degenerate.any()):
+        grad = grad.clone()
+        grad[degenerate] = _fd_grad(psi, x[degenerate], fd_step)
+    return grad
 
 
 def outward_normal(
@@ -492,14 +525,17 @@ def outward_normal(
     picked up, and a still-degenerate gradient yields a zero vector rather than a
     division blow-up.
     """
-    _, grad = _value_and_grad(psi, x)
-    degenerate = grad.norm(dim=1) <= grad_eps
-    if bool(degenerate.any()):
-        grad = grad.clone()
-        grad[degenerate] = _fd_grad(psi, x[degenerate], fd_step)
+    if x.shape[0] == 0:
+        return x.detach().clone()
+    tiny = torch.finfo(x.dtype).tiny
+    # "Degenerate" is relative to the batch: a uniformly scaled psi has uniformly
+    # small gradients, which are perfectly good normals.
+    grad = _robust_grad(psi, x, grad_eps, fd_step)
+    norm = grad.norm(dim=1)
 
-    norm = grad.norm(dim=1, keepdim=True)
-    return torch.where(norm > grad_eps, grad / norm.clamp_min(grad_eps), torch.zeros_like(grad))
+    floor = grad_eps * norm.max().clamp_min(tiny)
+    norm = norm.unsqueeze(1)
+    return torch.where(norm > floor, grad / norm.clamp_min(tiny), torch.zeros_like(grad))
 
 
 def sample_boundary_sdf(
@@ -518,7 +554,8 @@ def sample_boundary_sdf(
 
     Draws ``oversample * n`` uniform proposals from the bounding box, projects
     them with :func:`project_to_boundary`, discards any that failed to converge
-    (``|ψ| > tol``) or left the box, and returns ``n`` of the survivors.
+    (estimated distance ``|ψ|/‖∇ψ‖ > tol``) or left the box, and returns ``n``
+    of the survivors.
 
     Distribution caveat
     -------------------
@@ -543,7 +580,12 @@ def sample_boundary_sdf(
         u = torch.rand(m, d, device=device, dtype=lo.dtype, generator=generator)
         seeds = lo + u * (hi - lo)
         proj = project_to_boundary(psi, seeds, n_iter=n_iter, tol=tol)
-        ok = psi(proj).reshape(-1).abs() < tol
+        # Distance estimate |psi| / |grad psi|; the gradient needs the same
+        # finite-difference fallback as outward_normal (a floored polygon
+        # distance has zero autograd gradient exactly on the boundary).
+        pval = psi(proj).reshape(-1)
+        pgrad = _robust_grad(psi, proj)
+        ok = pval.abs() < tol * pgrad.norm(dim=1).clamp_min(torch.finfo(pval.dtype).tiny)
         ok &= ((proj >= lo) & (proj <= hi)).all(dim=1)
         good = proj[ok]
         if good.numel():
