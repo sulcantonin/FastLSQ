@@ -157,17 +157,31 @@ def test_to_dict_contract():
 # learnable bandwidth
 # ----------------------------------------------------------------------
 
-def test_solve_cached_matches_solve_inner_for_vector_outputs():
+def test_solve_cached_keeps_vector_output_bookkeeping():
+    """solve_cached must unpack beta to (N, k) and set _beta_flat like solve_inner.
+
+    The check is against an independently computed ``pinv(A) @ b`` rather than
+    against ``solve_inner``: the two back-ends truncate an ill-conditioned random
+    system differently (gelsd with rcond vs. pinv), and that disagreement is
+    LAPACK-dependent -- it was within 1e-8 on macOS and not on Linux CI.  The
+    defect being pinned is the bookkeeping, not back-end agreement.
+    """
     torch.manual_seed(0)
     m = fl.LearnableFastLSQ(1, 8, n_outputs=2)
     x = torch.rand(20, 1)
     H = m.basis.evaluate(x).detach()
     A = torch.block_diag(H, H); b = torch.randn(40, 1)
-    m.solve_inner(A, b)
-    u1 = m.predict(x).clone()
-    m.cache_operator(A); m.solve_cached(b)
+    m.cache_operator(A)
+    m.solve_cached(b)
+    beta_flat = torch.linalg.pinv(A) @ b
     assert m.beta.shape == (8, 2)
-    assert torch.allclose(m.predict(x), u1, atol=1e-8)
+    assert torch.allclose(m._beta_flat, beta_flat)
+    expected = torch.cat([H @ beta_flat[:8], H @ beta_flat[8:]], dim=1)
+    assert torch.allclose(m.predict(x), expected, atol=1e-10)
+    # and the same call path works for the scalar case
+    s = fl.LearnableFastLSQ(1, 8)
+    s.cache_operator(H); s.solve_cached(b[:20])
+    assert s.beta.shape == (8, 1) and torch.allclose(s.predict(x), H @ s.beta)
 
 
 def test_scalar_mode_follows_module_dtype():
