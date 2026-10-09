@@ -178,10 +178,12 @@ def test_solve_cached_keeps_vector_output_bookkeeping():
     assert torch.allclose(m._beta_flat, beta_flat)
     expected = torch.cat([H @ beta_flat[:8], H @ beta_flat[8:]], dim=1)
     assert torch.allclose(m.predict(x), expected, atol=1e-10)
-    # and the same call path works for the scalar case
+    # and the same call path works for the scalar case (its own basis matrix)
     s = fl.LearnableFastLSQ(1, 8)
-    s.cache_operator(H); s.solve_cached(b[:20])
-    assert s.beta.shape == (8, 1) and torch.allclose(s.predict(x), H @ s.beta)
+    Hs = s.basis.evaluate(x).detach()
+    s.cache_operator(Hs); s.solve_cached(b[:20])
+    assert s.beta.shape == (8, 1)
+    assert torch.allclose(s.predict(x), Hs @ s.beta)
 
 
 def test_scalar_mode_follows_module_dtype():
