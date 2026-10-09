@@ -70,7 +70,10 @@ def newton_solve(solver, problem, x_pde, bcs, f_pde,
     would be identical on the next sweep, so continuing just recomputes the same rejected
     step until ``max_iter``.  That case is recorded in the history as
     ``{"step_size": 0.0, "line_search": "rejected"}`` and the last entry carries
-    ``"stop"``, so the caller can tell a converged run from a stalled one.
+    ``"stop"``, so the caller can tell a converged run from a stalled one.  The
+    ``"stop"`` values are ``"residual"`` (relative criterion 1), ``"solution_change"``
+    (criterion 2), ``"residual_abs"`` (``||R|| < 0.01 * tol_res``),
+    ``"line_search_rejected"`` and ``"max_iter"``.
 
     Parameters
     ----------
@@ -95,9 +98,14 @@ def newton_solve(solver, problem, x_pde, bcs, f_pde,
     n_outputs = getattr(problem, "n_outputs", 1)
     N = solver.n_features
     R0 = None
+    # (J, -R) at the current iterate.  The line search already assembles both at
+    # every trial point, so the accepted trial's pair is carried into the next
+    # iteration instead of being rebuilt (one full assembly saved per iteration).
+    J = neg_R = None
 
     for it in range(max_iter):
-        J, neg_R = problem.build_newton_step(solver, x_pde, bcs, f_pde)
+        if J is None:
+            J, neg_R = problem.build_newton_step(solver, x_pde, bcs, f_pde)
         res_norm = torch.norm(neg_R).item()
         if R0 is None:
             R0 = max(res_norm, 1e-30)
@@ -119,14 +127,17 @@ def newton_solve(solver, problem, x_pde, bcs, f_pde,
         beta_old = solver.beta.clone()
 
         accepted = False
+        J = neg_R = None
         for _ in range(10):
             solver.beta = beta_old + alpha * delta_beta
-            _, new_neg_R = problem.build_newton_step(solver, x_pde, bcs, f_pde)
+            J_new, new_neg_R = problem.build_newton_step(solver, x_pde, bcs, f_pde)
             new_res = torch.norm(new_neg_R).item()
             if new_res < res_norm * (1.0 - 1e-4 * alpha) + 1e-15:
                 accepted = True
+                J, neg_R = J_new, new_neg_R
                 break
             alpha *= 0.5
+        del J_new, new_neg_R
         if not accepted:
             # No backtracked step satisfied the Armijo condition; reject the
             # step and keep the previous iterate rather than committing a
@@ -164,10 +175,14 @@ def newton_solve(solver, problem, x_pde, bcs, f_pde,
             break
 
         if res_norm < tol_res * 0.01:
+            history[-1]["stop"] = "residual_abs"
             if verbose:
                 print(f"  Residual converged in {it + 1} iterations "
                       f"(|R|={res_norm:.1e})")
             break
+    else:
+        if history:
+            history[-1]["stop"] = "max_iter"
 
     return history
 
@@ -178,11 +193,13 @@ def newton_solve(solver, problem, x_pde, bcs, f_pde,
 
 def continuation_solve(solver, problem, x_pde, bcs, f_pde_final,
                        param_name, param_schedule,
-                       max_newton_per_step=15, mu=1e-10, verbose=True):
+                       max_newton_per_step=15, mu=1e-10, verbose=True,
+                       tol_res=1e-12, tol_du=1e-13, damping=1.0):
     """Solve a sequence of problems with gradually increasing nonlinearity.
 
     At each stage, the previous solution is used as the initial guess
-    for Newton on the next (harder) parameter value.
+    for Newton on the next (harder) parameter value.  ``tol_res``, ``tol_du``
+    and ``damping`` are forwarded to every inner :func:`newton_solve`.
 
     The problem object must support:
       - ``setattr(problem, param_name, value)``
@@ -204,7 +221,8 @@ def continuation_solve(solver, problem, x_pde, bcs, f_pde_final,
 
         history = newton_solve(
             solver, problem, x_pde, bcs, f_pde,
-            max_iter=max_newton_per_step, mu=mu, verbose=verbose,
+            max_iter=max_newton_per_step, tol_res=tol_res, tol_du=tol_du,
+            damping=damping, mu=mu, verbose=verbose,
         )
         all_history.extend(history)
 
