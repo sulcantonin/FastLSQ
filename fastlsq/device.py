@@ -16,6 +16,17 @@ Configure at runtime::
 or via the ``FASTLSQ_DEVICE`` environment variable.  ``set_device`` also sets the
 torch *default* device so that tensors created without an explicit ``device=``
 (e.g. inside problem definitions) land on the same device.
+
+Import-time side effect
+-----------------------
+Importing ``fastlsq`` calls ``torch.set_default_dtype(torch.float64)`` once.  The
+package's accuracy regime (~1e-12 relative error) needs float64, and the
+built-in problems create their collocation tensors with the default dtype, so
+this is the one global setting the library insists on.  It is process-wide and
+affects unrelated torch code in the same interpreter.  Set the environment
+variable ``FASTLSQ_KEEP_DEFAULT_DTYPE=1`` *before* the import to leave the
+default dtype alone; FastLSQ then runs in whatever dtype torch is already using
+(float32 gives ~1e-6 accuracy, and Apple-MPS becomes eligible for auto-selection).
 """
 
 import os
@@ -86,7 +97,9 @@ def resolve_device(prefer=None, dtype=None) -> torch.device:
 # FastLSQ targets the float64 high-accuracy regime by default (its ~1e-12
 # results require it).  Set it at import so that auto device-selection excludes
 # Apple-MPS (no float64 there) unless the user deliberately switches to float32.
-torch.set_default_dtype(torch.float64)
+# FASTLSQ_KEEP_DEFAULT_DTYPE=1 opts out (see the module docstring).
+if os.environ.get("FASTLSQ_KEEP_DEFAULT_DTYPE", "").strip().lower() not in ("1", "true", "yes"):
+    torch.set_default_dtype(torch.float64)
 _DEVICE = resolve_device()
 
 
