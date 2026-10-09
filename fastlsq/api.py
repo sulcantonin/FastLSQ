@@ -326,6 +326,7 @@ def solve_nonlinear(
             solver, problem, x_pde, bcs, f_pde,
             param_name="nu", param_schedule=schedule,
             max_newton_per_step=max_iter // max(len(schedule), 1) + 5,
+            tol_res=tol_res, tol_du=tol_du, damping=damping,
             mu=mu, verbose=verbose,
         )
         # Restore target parameter

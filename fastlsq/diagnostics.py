@@ -9,7 +9,18 @@ from typing import Dict, List, Tuple, Optional, Any
 
 from fastlsq.solvers import FastLSQSolver
 from fastlsq.linalg import solve_lstsq
-from fastlsq.utils import device
+
+
+def _fd_settings(dtype: torch.dtype):
+    """Central-difference step and acceptance threshold for ``dtype``.
+
+    With step ``h`` the central difference has truncation error ``O(h^2)`` and
+    round-off error ``O(eps_machine / h)``; ``h ~ eps_machine^(1/3)`` balances the
+    two.  The thresholds leave an order of magnitude of slack over that optimum.
+    """
+    if dtype in (torch.float64, torch.double):
+        return 1e-6, 1e-5
+    return 1e-3, 1e-2          # float32 (and anything narrower)
 
 
 def check_problem(
@@ -21,10 +32,18 @@ def check_problem(
     """Run diagnostics on a problem definition.
 
     Checks:
-    - Shape consistency of exact() and exact_grad()
-    - Finite difference consistency of exact_grad()
-    - BC consistency (if applicable)
-    - get_train_data() returns valid data
+
+    - shape consistency of ``exact()`` and ``exact_grad()`` (scalar problems
+      return ``(n, 1)`` / ``(n, dim)``; vector problems with ``n_outputs = k``
+      return ``(n, k)`` / ``(n, dim, k)``),
+    - ``exact_grad()`` against a **central** finite difference of ``exact()``,
+      with a step and tolerance chosen for the active dtype (float32 problems
+      are checked loosely rather than falsely failed),
+    - Dirichlet boundary data against ``exact()`` at the boundary points, for
+      every ``(x_bc, u_bc)`` (or ``(x_bc, u_bc, "dirichlet")``) entry whose
+      shapes allow the comparison,
+    - ``get_train_data()`` returns a valid ``(x_pde, bcs, f_pde)`` triple (or
+      the legacy ``(x_pde, bcs)`` pair).
 
     Parameters
     ----------
@@ -38,75 +57,88 @@ def check_problem(
     Returns
     -------
     results : dict
-        Diagnostic results.
+        ``shape_check``, ``gradient_check``, ``bc_check``, ``data_check`` (bools),
+        plus ``warnings`` and ``errors`` (lists of str).
     """
     results = {
         "shape_check": True,
         "gradient_check": True,
+        "bc_check": True,
         "data_check": True,
         "warnings": [],
         "errors": [],
     }
+    k = int(getattr(problem, "n_outputs", 1))
+    dim = int(problem.dim)
 
-    # Test exact() and exact_grad() shapes
+    # ---- exact() / exact_grad(): shapes and a central finite difference ----
     try:
         x_test = problem.get_test_points(n_test)
         u = problem.exact(x_test)
         grad_u = problem.exact_grad(x_test)
 
-        if u.shape != (n_test, 1):
+        n = x_test.shape[0]
+        exp_u = (n, k)
+        exp_g = (n, dim) if k == 1 else (n, dim, k)
+        if tuple(u.shape) != exp_u:
             results["errors"].append(
-                f"exact() returns shape {u.shape}, expected ({n_test}, 1)"
+                f"exact() returns shape {tuple(u.shape)}, expected {exp_u}"
+            )
+            results["shape_check"] = False
+        if tuple(grad_u.shape) != exp_g:
+            results["errors"].append(
+                f"exact_grad() returns shape {tuple(grad_u.shape)}, expected {exp_g}"
             )
             results["shape_check"] = False
 
-        if grad_u.shape != (n_test, problem.dim):
-            results["errors"].append(
-                f"exact_grad() returns shape {grad_u.shape}, "
-                f"expected ({n_test}, {problem.dim})"
-            )
-            results["shape_check"] = False
-
-        # Finite difference check
-        eps = 1e-5
-        grad_fd = torch.zeros_like(grad_u)
-        for d in range(problem.dim):
-            x_plus = x_test.clone()
-            x_plus[:, d] += eps
-            u_plus = problem.exact(x_plus)
-            grad_fd[:, d] = ((u_plus - u) / eps).squeeze()
-
-        grad_error = torch.norm(grad_u - grad_fd) / (torch.norm(grad_u) + 1e-10)
-        if grad_error > 1e-3:
-            results["warnings"].append(
-                f"Gradient finite difference error: {grad_error:.2e} "
-                f"(may indicate incorrect exact_grad() implementation)"
-            )
+        if results["shape_check"]:
+            h, thresh = _fd_settings(x_test.dtype)
+            grad_fd = torch.zeros_like(grad_u)
+            for d in range(dim):
+                x_plus, x_minus = x_test.clone(), x_test.clone()
+                x_plus[:, d] += h
+                x_minus[:, d] -= h
+                du = (problem.exact(x_plus) - problem.exact(x_minus)) / (2.0 * h)
+                if k == 1:
+                    grad_fd[:, d] = du.reshape(-1)
+                else:
+                    grad_fd[:, d, :] = du
+            grad_error = (torch.norm(grad_u - grad_fd)
+                          / (torch.norm(grad_u) + 1e-30)).item()
+            if not np.isfinite(grad_error) or grad_error > thresh:
+                results["warnings"].append(
+                    f"exact_grad() disagrees with a central finite difference of "
+                    f"exact(): relative error {grad_error:.2e} > {thresh:.0e} "
+                    f"(step {h:.0e}, dtype {str(x_test.dtype).replace('torch.', '')})"
+                )
+                results["gradient_check"] = False
+        else:
             results["gradient_check"] = False
 
     except Exception as e:
         results["errors"].append(f"Error in exact/exact_grad: {e}")
         results["shape_check"] = False
+        results["gradient_check"] = False
 
-    # Test get_train_data()
+    # ---- get_train_data(): structure, then Dirichlet data vs exact() ----
+    bcs = None
     try:
         data = problem.get_train_data(n_pde=100, n_bc=20)
-        if len(data) == 3:
-            x_pde, bcs, f_pde = data
-            if x_pde.shape[1] != problem.dim:
+        if len(data) in (2, 3):
+            x_pde, bcs = data[0], data[1]
+            if x_pde.shape[1] != dim:
                 results["errors"].append(
                     f"get_train_data() x_pde has wrong dimension: "
-                    f"{x_pde.shape[1]} != {problem.dim}"
+                    f"{x_pde.shape[1]} != {dim}"
                 )
                 results["data_check"] = False
-        elif len(data) == 2:
-            x_pde, bcs = data
-            if x_pde.shape[1] != problem.dim:
-                results["errors"].append(
-                    f"get_train_data() x_pde has wrong dimension: "
-                    f"{x_pde.shape[1]} != {problem.dim}"
+            if len(data) == 2:
+                results["warnings"].append(
+                    "get_train_data() returns (x_pde, bcs) without f_pde; the "
+                    "documented contract is (x_pde, bcs, f_pde) and some entry "
+                    "points (train_bandwidth, the Newton-mode scale search) "
+                    "unpack three values"
                 )
-                results["data_check"] = False
         else:
             results["errors"].append(
                 f"get_train_data() should return 2 or 3 items, got {len(data)}"
@@ -116,12 +148,39 @@ def check_problem(
         results["errors"].append(f"Error in get_train_data(): {e}")
         results["data_check"] = False
 
+    if bcs is not None:
+        try:
+            for i, entry in enumerate(bcs):
+                if not isinstance(entry, (tuple, list)) or len(entry) < 2:
+                    continue
+                kind = entry[2] if len(entry) >= 3 else "dirichlet"
+                if not (isinstance(kind, str) and kind.lower() == "dirichlet"):
+                    continue
+                x_bc, u_bc = entry[0], entry[1]
+                if not (torch.is_tensor(x_bc) and torch.is_tensor(u_bc)):
+                    continue
+                u_ref = problem.exact(x_bc)
+                if tuple(u_ref.shape) != tuple(u_bc.shape):
+                    continue
+                _, thresh = _fd_settings(u_bc.dtype)
+                err = (torch.norm(u_bc - u_ref)
+                       / (torch.norm(u_ref) + 1e-30)).item()
+                if not np.isfinite(err) or err > thresh:
+                    results["warnings"].append(
+                        f"boundary entry {i}: Dirichlet data differs from exact() "
+                        f"at the boundary points (relative error {err:.2e})"
+                    )
+                    results["bc_check"] = False
+        except Exception as e:
+            results["warnings"].append(f"BC consistency check skipped: {e}")
+
     if verbose:
         print("=" * 60)
         print("Problem Diagnostics")
         print("=" * 60)
         print(f"Shape check:     {'PASS' if results['shape_check'] else 'FAIL'}")
         print(f"Gradient check:  {'PASS' if results['gradient_check'] else 'FAIL'}")
+        print(f"BC check:        {'PASS' if results['bc_check'] else 'FAIL'}")
         print(f"Data check:      {'PASS' if results['data_check'] else 'FAIL'}")
         if results["warnings"]:
             print("\nWarnings:")
@@ -217,14 +276,18 @@ def suggest_scale(
     n_trials: int = 3,
     verbose: bool = True,
 ) -> float:
-    """Suggest a reasonable scale based on problem characteristics.
+    """Suggest a starting scale from the problem's dimension alone.
 
-    This is a heuristic based on problem dimension and domain size.
+    A coarse heuristic (5 for d <= 2, 3 for d <= 5, 2 above); it does not look at
+    the domain size, wavenumber or solution content.  Use
+    :func:`~fastlsq.tuning.auto_select_scale` (or ``solve_linear(scale=None)``)
+    for a data-driven choice.
 
     Parameters
     ----------
     problem : object
     n_trials : int
+        Accepted for backward compatibility and ignored: no trials are run.
     verbose : bool
 
     Returns

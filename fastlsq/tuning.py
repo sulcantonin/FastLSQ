@@ -11,7 +11,7 @@ from fastlsq.solvers import FastLSQSolver
 from fastlsq.linalg import solve_lstsq
 from fastlsq.block import unpack_beta
 from fastlsq.newton import build_solver_with_scale, get_initial_guess, newton_solve
-from fastlsq.utils import evaluate_error
+from fastlsq.utils import evaluate_error, preserve_rng
 from fastlsq.device import get_device
 
 
@@ -52,7 +52,23 @@ def auto_select_scale(
     Returns
     -------
     best_scale : float
+
+    Notes
+    -----
+    Every trial is seeded (``seed = 0 .. n_trials-1``) so the search is
+    reproducible.  The caller's global RNG state is saved before the search and
+    restored afterwards, so the seeding does not leak into the solve that follows.
     """
+    with preserve_rng():
+        return _auto_select_scale(
+            problem, solver_class, n_blocks=n_blocks, hidden_size=hidden_size,
+            n_pde=n_pde, n_bc=n_bc, scales=scales, n_trials=n_trials,
+            newton_mode=newton_mode, verbose=verbose,
+        )
+
+
+def _auto_select_scale(problem, solver_class, *, n_blocks, hidden_size, n_pde,
+                       n_bc, scales, n_trials, newton_mode, verbose):
     if scales is None:
         scales = [0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 10.0, 12.0, 15.0]
 

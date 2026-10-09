@@ -14,7 +14,7 @@ import torch
 from typing import Optional, Dict, Any
 
 from fastlsq.solvers import FastLSQSolver
-from fastlsq.utils import device
+from fastlsq.device import get_device
 
 
 if pl is not None:
@@ -55,7 +55,7 @@ if pl is not None:
             # Initialize beta as a parameter (will be optimized)
             self.register_parameter(
                 "beta",
-                nn.Parameter(torch.zeros(self.solver.n_features, 1, device=device)),
+                nn.Parameter(torch.zeros(self.solver.n_features, 1, device=get_device())),
             )
             self.solver.beta = self.beta
 

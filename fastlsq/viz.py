@@ -140,10 +140,13 @@ def hero_figure_landscape(size: Tuple[float, float] = (13.0, 7.5),
                           ) -> Tuple[plt.Figure, Sequence[plt.Axes]]:
     if width_ratios is None:
         width_ratios = [1.6, 1.0]
+    if len(width_ratios) != ncols:
+        width_ratios = [1.0] * ncols
     fig, axes = plt.subplots(1, ncols, figsize=size, dpi=dpi,
-                             facecolor=facecolor,
+                             facecolor=facecolor, squeeze=False,
                              gridspec_kw=dict(width_ratios=width_ratios),
                              constrained_layout=True)
+    axes = axes[0]          # always a 1-D sequence, even for ncols=1
     for ax in axes:
         ax.set_facecolor(facecolor)
         ax.set_xticks([]); ax.set_yticks([])

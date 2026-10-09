@@ -59,9 +59,16 @@ class MirrorBasis:
         +1 gives functions even in ``x_axis``, -1 odd ones (which vanish on the
         mirror plane).
 
-    Implements the duck-typed basis protocol (``evaluate``, ``derivative``,
-    ``gradient``, ``laplacian``, ``hessian_diag``, ``operator``, ``cache``), so
-    :class:`~fastlsq.basis.DiffOperator` and the solvers accept it unchanged.
+    Implements the full duck-typed basis protocol (``evaluate``, ``derivative``,
+    ``gradient``, ``laplacian``, ``biharmonic``, ``advection``, ``hessian_diag``,
+    ``operator``, ``symbol``, ``definite_integral``, ``multi_integral``,
+    ``iterated_integral``, ``cache``), so every operator class --
+    :class:`~fastlsq.basis.DiffOperator`, :class:`~fastlsq.basis.SymbolOperator`,
+    :class:`~fastlsq.basis.IntegralOperator`,
+    :class:`~fastlsq.basis.MultiIntegralOperator` -- and the solvers accept it
+    unchanged.  Each is exact: the mirror bank is itself a bank of plane waves
+    with frequencies ``R W``, so applying a linear operator bank by bank is the
+    operator applied to the pair.
     """
 
     def __init__(self, basis: SinusoidalBasis, axis: int, parity: int = 1):
@@ -119,6 +126,25 @@ class MirrorBasis:
 
     def operator(self, x, terms, cache=None):
         return self._pair("operator", x, terms, cache=cache)
+
+    def biharmonic(self, x, dims: Optional[Sequence[int]] = None, cache=None):
+        return self._pair("biharmonic", x, dims=dims, cache=cache)
+
+    def advection(self, x, v, cache=None):
+        return self._pair("advection", x, v, cache=cache)
+
+    def symbol(self, x, m, cache=None):
+        return self._pair("symbol", x, m, cache=cache)
+
+    def definite_integral(self, x, dim, lower, upper=None, cache=None):
+        return self._pair("definite_integral", x, dim, lower, upper=upper, cache=cache)
+
+    def multi_integral(self, x, dims, lowers, uppers=None, cache=None):
+        return self._pair("multi_integral", x, dims, lowers, uppers=uppers, cache=cache)
+
+    def iterated_integral(self, x, dim, lower, upper=None, order=1, cache=None):
+        return self._pair("iterated_integral", x, dim, lower, upper=upper,
+                          order=order, cache=cache)
 
     def plain(self):
         """The full (unpaired) bank: ``W`` (d, 2N), ``b`` (1, 2N) and the column

@@ -46,7 +46,7 @@ from fastlsq.kernels import (
     degenerate_eigenvalues,
     fredholm_second_kind,
 )
-from fastlsq.utils import device
+from fastlsq.device import get_device
 
 
 # ======================================================================
@@ -87,7 +87,7 @@ class FredholmProductKernel:
         return self.freq * torch.cos(self.freq * x[:, 0:1]) + self.lam * self.c
 
     def get_train_data(self, n_pde=4000, n_bc=0):
-        x_pde = torch.rand(n_pde, 1, device=device)
+        x_pde = torch.rand(n_pde, 1, device=get_device())
         return x_pde, [], self.source(x_pde)
 
     def build(self, slv, x_pde, bcs, f_pde):
@@ -95,7 +95,7 @@ class FredholmProductKernel:
         return L.apply(slv.basis, x_pde), f_pde
 
     def get_test_points(self, n=4000):
-        return torch.rand(n, 1, device=device)
+        return torch.rand(n, 1, device=get_device())
 
     def characteristic_values(self, basis):
         """The λ at which this equation is singular (analytically, 3.0)."""
@@ -158,7 +158,7 @@ class FredholmRank2Kernel:
         )
 
     def get_train_data(self, n_pde=4000, n_bc=0):
-        x_pde = torch.rand(n_pde, 1, device=device)
+        x_pde = torch.rand(n_pde, 1, device=get_device())
         return x_pde, [], self.source(x_pde)
 
     def build(self, slv, x_pde, bcs, f_pde):
@@ -166,7 +166,7 @@ class FredholmRank2Kernel:
         return L.apply(slv.basis, x_pde), f_pde
 
     def get_test_points(self, n=4000):
-        return torch.rand(n, 1, device=device)
+        return torch.rand(n, 1, device=get_device())
 
 
 # ======================================================================
@@ -213,7 +213,7 @@ class VolterraSecondKind:
         return self.lam * self.exact(x) - self.omega * torch.sin(self.omega * t)
 
     def get_train_data(self, n_pde=4000, n_bc=0):
-        x_pde = torch.rand(n_pde, 1, device=device)
+        x_pde = torch.rand(n_pde, 1, device=get_device())
         return x_pde, [], self.source(x_pde)
 
     def build(self, slv, x_pde, bcs, f_pde):
@@ -223,7 +223,7 @@ class VolterraSecondKind:
         return L.apply(slv.basis, x_pde), f_pde
 
     def get_test_points(self, n=4000):
-        return torch.rand(n, 1, device=device)
+        return torch.rand(n, 1, device=get_device())
 
 
 class IntegroDifferentialODE:
@@ -265,8 +265,8 @@ class IntegroDifferentialODE:
         return up + lam * integral
 
     def get_train_data(self, n_pde=4000, n_bc=1):
-        x_pde = torch.rand(n_pde, 1, device=device)
-        x_ic = torch.zeros(1, 1, device=device)
+        x_pde = torch.rand(n_pde, 1, device=get_device())
+        x_ic = torch.zeros(1, 1, device=get_device())
         return x_pde, [(x_ic, self.exact(x_ic))], self.source(x_pde)
 
     def build(self, slv, x_pde, bcs, f_pde):
@@ -281,4 +281,4 @@ class IntegroDifferentialODE:
         return torch.cat(As), torch.cat(bs)
 
     def get_test_points(self, n=4000):
-        return torch.rand(n, 1, device=device)
+        return torch.rand(n, 1, device=get_device())

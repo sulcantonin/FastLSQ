@@ -16,7 +16,7 @@ Each class provides:
 import torch
 import numpy as np
 
-from fastlsq.utils import device
+from fastlsq.device import get_device
 from fastlsq.block import block_concat
 
 
@@ -43,11 +43,11 @@ class PoissonND:
         )
 
     def get_train_data(self, n_pde=10000, n_bc=2000):
-        x_pde = torch.rand(n_pde, self.dim, device=device)
+        x_pde = torch.rand(n_pde, self.dim, device=get_device())
         f_pde = self.source(x_pde)
-        x_bc = torch.rand(n_bc, self.dim, device=device)
-        mask_dim = torch.randint(0, self.dim, (n_bc,), device=device)
-        mask_val = torch.randint(0, 2, (n_bc,), device=device).float()
+        x_bc = torch.rand(n_bc, self.dim, device=get_device())
+        mask_dim = torch.randint(0, self.dim, (n_bc,), device=get_device())
+        mask_val = torch.randint(0, 2, (n_bc,), device=get_device()).float()
         for i in range(n_bc):
             x_bc[i, mask_dim[i]] = mask_val[i]
         u_bc = self.exact(x_bc)
@@ -66,7 +66,7 @@ class PoissonND:
         return torch.cat(As), torch.cat(bs)
 
     def get_test_points(self, n=10000):
-        return torch.rand(n, self.dim, device=device)
+        return torch.rand(n, self.dim, device=get_device())
 
 
 # ======================================================================
@@ -98,22 +98,22 @@ class HeatND:
         return -(1.0 / self.d) * r2 * self.exact(x)
 
     def sample_sphere_time(self, n):
-        pts = torch.randn(n, 5, device=device)
+        pts = torch.randn(n, 5, device=get_device())
         pts = pts / torch.norm(pts, dim=1, keepdim=True)
-        r = torch.rand(n, 1, device=device) ** (1 / 5.0)
+        r = torch.rand(n, 1, device=get_device()) ** (1 / 5.0)
         spatial = pts * r
-        time = torch.rand(n, 1, device=device)
+        time = torch.rand(n, 1, device=get_device())
         return torch.cat([spatial, time], dim=1)
 
     def get_train_data(self, n_pde=10000, n_bc=2000):
         x_pde = self.sample_sphere_time(n_pde)
         f_pde = self.source(x_pde)
         x_ic_space = self.sample_sphere_time(n_bc)[:, 0:5]
-        x_ic = torch.cat([x_ic_space, torch.zeros(n_bc, 1, device=device)], 1)
+        x_ic = torch.cat([x_ic_space, torch.zeros(n_bc, 1, device=get_device())], 1)
         u_ic = self.exact(x_ic)
-        x_bc_space = torch.randn(n_bc, 5, device=device)
+        x_bc_space = torch.randn(n_bc, 5, device=get_device())
         x_bc_space = x_bc_space / torch.norm(x_bc_space, dim=1, keepdim=True)
-        t_bc = torch.rand(n_bc, 1, device=device)
+        t_bc = torch.rand(n_bc, 1, device=get_device())
         x_bc = torch.cat([x_bc_space, t_bc], 1)
         g_bc = self.exact(x_bc)
         return x_pde, [
@@ -152,7 +152,14 @@ class HeatND:
 # ======================================================================
 
 class Wave1D:
-    """Wave equation  u_tt = c^2 u_xx  on [0,1] x [0,1]."""
+    """Wave equation  u_tt = c^2 u_xx  on [0,1] x [0,1].
+
+    Homogeneous, so the forcing returned by :meth:`get_train_data` is zero; it
+    is returned anyway so the problem follows the same
+    ``(x_pde, bcs, f_pde)`` / ``build(solver, x_pde, bcs, f_pde)`` contract as
+    every other problem (``train_bandwidth`` and the Newton-mode scale search
+    unpack three values).
+    """
 
     def __init__(self):
         self.name = "Wave 1D"
@@ -173,31 +180,35 @@ class Wave1D:
         return torch.cat([ux, ut], dim=1)
 
     def get_train_data(self, n_pde=5000, n_bc=1000):
-        x_pde = torch.rand(n_pde, 2, device=device)
+        x_pde = torch.rand(n_pde, 2, device=get_device())
         x_ic = torch.cat([
-            torch.rand(n_bc, 1, device=device),
-            torch.zeros(n_bc, 1, device=device),
+            torch.rand(n_bc, 1, device=get_device()),
+            torch.zeros(n_bc, 1, device=get_device()),
         ], 1)
         u_ic = (torch.sin(np.pi * x_ic[:, 0:1])
                 + 0.5 * torch.sin(4 * np.pi * x_ic[:, 0:1]))
         ut_ic = torch.zeros_like(u_ic)
-        t_bc = torch.rand(n_bc, 1, device=device)
+        t_bc = torch.rand(n_bc, 1, device=get_device())
         x_bc_l = torch.cat([torch.zeros_like(t_bc), t_bc], 1)
         x_bc_r = torch.cat([torch.ones_like(t_bc), t_bc], 1)
         u_bc = torch.zeros_like(t_bc)
+        f_pde = torch.zeros(n_pde, 1, device=get_device())
         return x_pde, [
             (x_ic, u_ic, "dirichlet"),
             (x_ic, ut_ic, "neumann_t"),
             (x_bc_l, u_bc, "dirichlet"),
             (x_bc_r, u_bc, "dirichlet"),
-        ]
+        ], f_pde
 
-    def build(self, slv, x_pde, bcs):
+    def source(self, x):
+        return torch.zeros(x.shape[0], 1, device=x.device, dtype=x.dtype)
+
+    def build(self, slv, x_pde, bcs, f_pde=None):
         basis = slv.basis
         cache = basis.cache(x_pde)
         hess_diag = basis.hessian_diag(x_pde, cache=cache)
         A = hess_diag[:, 1, :] - self.c2 * hess_diag[:, 0, :]
-        b = torch.zeros(len(x_pde), 1, device=device)
+        b = self.source(x_pde) if f_pde is None else f_pde
         As, bs = [A], [b]
         for (pts, vals, type_) in bcs:
             h = basis.evaluate(pts)
@@ -211,7 +222,7 @@ class Wave1D:
         return torch.cat(As), torch.cat(bs)
 
     def get_test_points(self, n=10000):
-        return torch.rand(n, self.dim, device=device)
+        return torch.rand(n, self.dim, device=get_device())
 
 
 # ======================================================================
@@ -273,15 +284,15 @@ class Wave2D_MS:
         return torch.cat([u_x, u_y, u_t_norm], dim=1)
 
     def get_train_data(self, n_pde=5000, n_bc=1000):
-        x_pde = torch.rand(n_pde, 3, device=device)
+        x_pde = torch.rand(n_pde, 3, device=get_device())
         x_ic = torch.cat([
-            torch.rand(n_bc, 2, device=device),
-            torch.zeros(n_bc, 1, device=device),
+            torch.rand(n_bc, 2, device=get_device()),
+            torch.zeros(n_bc, 1, device=get_device()),
         ], 1)
         u_ic = self.exact(x_ic)
-        ut_ic = torch.zeros(n_bc, 1, device=device)
-        x_bc = torch.rand(n_bc, 3, device=device)
-        mask = torch.randint(0, 4, (n_bc,), device=device)
+        ut_ic = torch.zeros(n_bc, 1, device=get_device())
+        x_bc = torch.rand(n_bc, 3, device=get_device())
+        mask = torch.randint(0, 4, (n_bc,), device=get_device())
         x_bc[mask == 0, 0] = 0
         x_bc[mask == 1, 0] = 1
         x_bc[mask == 2, 1] = 0
@@ -301,7 +312,7 @@ class Wave2D_MS:
         u_yy = hess_diag[:, 1, :]
         u_tt_norm = hess_diag[:, 2, :]
         A = u_tt_norm - (self.t_max ** 2) * (u_xx + self.a2 * u_yy)
-        b = torch.zeros(len(x_pde), 1, device=device)
+        b = torch.zeros(len(x_pde), 1, device=get_device())
         As, bs = [A], [b]
         w_bc = 1000.0
         for (pts, vals, type_) in bcs:
@@ -315,7 +326,7 @@ class Wave2D_MS:
         return torch.cat(As), torch.cat(bs)
 
     def get_test_points(self, n=2000):
-        return torch.rand(n, 3, device=device)
+        return torch.rand(n, 3, device=get_device())
 
 
 # ======================================================================
@@ -400,18 +411,18 @@ class ElasticWave2D:
         return torch.stack([grad_ux, grad_uy], dim=-1)  # (M, 3, 2)
 
     def get_train_data(self, n_pde=5000, n_bc=1000):
-        x_pde = torch.rand(n_pde, 3, device=device)
+        x_pde = torch.rand(n_pde, 3, device=get_device())
         x_ic = torch.cat([
-            torch.rand(n_bc, 2, device=device),
-            torch.zeros(n_bc, 1, device=device),
+            torch.rand(n_bc, 2, device=get_device()),
+            torch.zeros(n_bc, 1, device=get_device()),
         ], 1)
         u_ic = self.exact(x_ic)
         ut_ic = self.exact_ut(x_ic)
         n_wall = n_bc // 4
-        r_t = torch.rand(n_wall, 1, device=device)
-        r_s = torch.rand(n_wall, 1, device=device)
-        zeros = torch.zeros(n_wall, 1, device=device)
-        ones = torch.ones(n_wall, 1, device=device)
+        r_t = torch.rand(n_wall, 1, device=get_device())
+        r_s = torch.rand(n_wall, 1, device=get_device())
+        zeros = torch.zeros(n_wall, 1, device=get_device())
+        ones = torch.ones(n_wall, 1, device=get_device())
         x_bc = torch.cat([
             torch.cat([zeros, r_s, r_t], 1),
             torch.cat([ones, r_s, r_t], 1),
@@ -453,7 +464,7 @@ class ElasticWave2D:
         A2_x = -cross * u_xy
         A2_y = u_tt - t_scale * (self.c_p2 * u_yy + self.c_s2 * u_xx)
 
-        z_pde = torch.zeros(len(x_pde), 1, device=device)
+        z_pde = torch.zeros(len(x_pde), 1, device=get_device())
         rows = [[A1_x, A1_y], [A2_x, A2_y]]   # block rows: [u_x col, u_y col]
         rhs = [[z_pde], [z_pde]]              # matching RHS column blocks
 
@@ -473,7 +484,7 @@ class ElasticWave2D:
         return block_concat(rows), block_concat(rhs)
 
     def get_test_points(self, n=2000):
-        return torch.rand(n, 3, device=device)
+        return torch.rand(n, 3, device=get_device())
 
 
 # ======================================================================
@@ -506,13 +517,13 @@ class Helmholtz2D:
         return -(self.k ** 2) * self.exact(x)
 
     def get_train_data(self, n_pde=10000, n_bc=2000):
-        x_pde = torch.rand(n_pde, 2, device=device)
+        x_pde = torch.rand(n_pde, 2, device=get_device())
         f_pde = self.source(x_pde)
         n_side = n_bc // 4
-        y_rand = torch.rand(n_side, 1, device=device)
-        x_rand = torch.rand(n_side, 1, device=device)
-        zeros = torch.zeros(n_side, 1, device=device)
-        ones = torch.ones(n_side, 1, device=device)
+        y_rand = torch.rand(n_side, 1, device=get_device())
+        x_rand = torch.rand(n_side, 1, device=get_device())
+        zeros = torch.zeros(n_side, 1, device=get_device())
+        ones = torch.ones(n_side, 1, device=get_device())
         x_bc = torch.cat([
             torch.cat([zeros, y_rand], 1),
             torch.cat([ones, y_rand], 1),
@@ -536,7 +547,7 @@ class Helmholtz2D:
         return torch.cat(As), torch.cat(bs)
 
     def get_test_points(self, n=10000):
-        return torch.rand(n, self.dim, device=device)
+        return torch.rand(n, self.dim, device=get_device())
 
 
 # ======================================================================
@@ -573,23 +584,23 @@ class Maxwell2D_TM:
         return torch.cat([du_dx, du_dy, du_dt], dim=1)
 
     def get_train_data(self, n_pde=5000, n_bc=1000):
-        x_pde = torch.rand(n_pde, 3, device=device)
-        x_ic_space = torch.rand(n_bc, 2, device=device)
-        x_ic = torch.cat([x_ic_space, torch.zeros(n_bc, 1, device=device)], 1)
+        x_pde = torch.rand(n_pde, 3, device=get_device())
+        x_ic_space = torch.rand(n_bc, 2, device=get_device())
+        x_ic = torch.cat([x_ic_space, torch.zeros(n_bc, 1, device=get_device())], 1)
         u_ic = self.exact(x_ic)
         ut_ic = torch.zeros_like(u_ic)
         n_wall = n_bc // 4
-        r_t = torch.rand(n_wall, 1, device=device)
-        r_s = torch.rand(n_wall, 1, device=device)
-        zeros = torch.zeros(n_wall, 1, device=device)
-        ones = torch.ones(n_wall, 1, device=device)
+        r_t = torch.rand(n_wall, 1, device=get_device())
+        r_s = torch.rand(n_wall, 1, device=get_device())
+        zeros = torch.zeros(n_wall, 1, device=get_device())
+        ones = torch.ones(n_wall, 1, device=get_device())
         x_bc = torch.cat([
             torch.cat([zeros, r_s, r_t], 1),
             torch.cat([ones, r_s, r_t], 1),
             torch.cat([r_s, zeros, r_t], 1),
             torch.cat([r_s, ones, r_t], 1),
         ], 0)
-        u_bc = torch.zeros(len(x_bc), 1, device=device)
+        u_bc = torch.zeros(len(x_bc), 1, device=get_device())
         return x_pde, [
             (x_ic, u_ic, "dirichlet"),
             (x_ic, ut_ic, "neumann_t"),
@@ -604,7 +615,7 @@ class Maxwell2D_TM:
         u_yy = hess_diag[:, 1, :]
         u_tt = hess_diag[:, 2, :]
         A = u_tt - (self.c ** 2) * (u_xx + u_yy)
-        b = torch.zeros(len(x_pde), 1, device=device)
+        b = torch.zeros(len(x_pde), 1, device=get_device())
         As, bs = [A], [b]
         for (pts, vals, type_) in bcs:
             h = basis.evaluate(pts)
@@ -618,4 +629,4 @@ class Maxwell2D_TM:
         return torch.cat(As), torch.cat(bs)
 
     def get_test_points(self, n=2000):
-        return torch.rand(n, 3, device=device)
+        return torch.rand(n, 3, device=get_device())
